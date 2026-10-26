@@ -74,6 +74,47 @@ def scan(root: str) -> dict:
     return inv
 
 
+def collect_srcs(items, root):
+    """Explicit sources: files, dirs, globs, or file lists (make .d, .f, .lst). Returns (inventory, incdirs)."""
+    files, incdirs = [], []
+    for it in items:
+        p = it if os.path.isabs(it) else os.path.join(root, it)
+        if any(c in it for c in "*?["):
+            files += sorted(glob.glob(p, recursive=True))
+        elif os.path.isdir(p):
+            for dp, dn, fn in os.walk(p):
+                dn[:] = [d for d in dn if d not in SKIP_DIRS]
+                files += [os.path.join(dp, f) for f in sorted(fn)]
+        elif os.path.isfile(p) and p.endswith((".d", ".f", ".lst", ".list", ".txt")):
+            base = os.path.dirname(p)
+            with open(p, encoding="utf-8", errors="replace") as f:
+                for tok in f.read().replace("\\\n", " ").split():
+                    if tok.endswith(":") or tok in ("\\",) or tok.startswith("-"):
+                        continue
+                    if tok.startswith("+incdir+"):
+                        incdirs += [os.path.normpath(os.path.join(base, d)) for d in tok[8:].split("+") if d]
+                        continue
+                    q = os.path.normpath(os.path.join(base, tok))
+                    if os.path.isfile(q):
+                        files.append(q)
+        elif os.path.isfile(p):
+            files.append(os.path.abspath(p))
+    inv = {}
+    for q in dict.fromkeys(os.path.abspath(f) for f in files):
+        kind = EXT.get(os.path.splitext(q)[1].lower())
+        if kind:
+            inv.setdefault(kind, []).append(q)
+    bdt = []
+    for q in inv.get("tcl", []):
+        with open(q, encoding="utf-8", errors="replace") as f:
+            if bdtcl.looks_like_bd(f.read(200000)):
+                bdt.append(q)
+    if bdt:
+        inv["bdtcl"] = bdt
+    incdirs += sorted({os.path.dirname(q) for q in inv.get("hdl_inc", [])})
+    return inv, incdirs
+
+
 def find_vivado():
     cands = []
     w = shutil.which("vivado")
@@ -157,19 +198,48 @@ def choose_bd(inv: dict, xp: dict, want: str = ""):
     return None, None, None
 
 
+def _part_near(script):
+    """Part from a sibling build script (set part "..." / -part ...)."""
+    for p in sorted(glob.glob(os.path.join(os.path.dirname(script), "*.tcl"))):
+        try:
+            with open(p, encoding="utf-8", errors="replace") as f:
+                m = re.search(r'(?:set\s+part\s+"?|-part\s+)(x[a-z]{1,3}\d[\w-]+)', f.read(100000))
+        except OSError:
+            continue
+        if m:
+            return m.group(1)
+    return None
+
+
 def bd_prefix(design: dict) -> str:
     return design["meta"].get("bd_path", "")
 
 
-def build(root: str, out_dir: str, top: str = "", bd: str = "", use_vivado: str = "auto", log=print) -> dict:
+def build(root: str, out_dir: str, top: str = "", bd: str = "", use_vivado: str = "auto", log=print,
+          srcs=None) -> dict:
     root = os.path.abspath(root)
-    rel = lambda p: os.path.relpath(p, root) if p and os.path.isabs(p) and p.startswith(root) else p
+
+    def rel(p):
+        if not p or not os.path.isabs(p):
+            return p
+        r = os.path.relpath(p, root)
+        return r if not r.startswith("../../..") else p
+
     inv = scan(root)
+    incdirs, rundirs = [], []
+    if srcs:
+        explicit, incdirs = collect_srcs(srcs, root)
+        rundirs = [os.path.dirname(os.path.join(root, x)) for x in srcs if x.endswith((".d", ".f", ".lst", ".list"))]
+        for k in ("hdl", "hdl_inc", "xdc", "bdtcl", "bd", "hwh", "xsa", "xpr"):
+            if k in explicit or k in ("hdl", "xdc"):
+                inv[k] = explicit.get(k, [])
+        for k in ("nb", "py", "c", "dt", "rpt", "log", "bit"):
+            inv[k] = sorted(set(inv.get(k, [])) | set(explicit.get(k, [])))
     xp = read_xpr(inv["xpr"][0]) if inv.get("xpr") else {}
     kind, main, hwh_path = choose_bd(inv, xp, bd)
     vivado, vver = find_vivado()
     design = None
-    if kind == "bdtcl" and vivado and use_vivado != "off":
+    if kind == "bdtcl" and vivado and use_vivado == "on":  # sourcing Tcl runs project code: explicit opt-in only
         from . import vivado as V
         got = V.export_bd(vivado, main, out_dir, part=xp.get("part") if xp else None,
                           rtl=xp.get("srcs") or inv.get("hdl", []), log=log)
@@ -182,11 +252,14 @@ def build(root: str, out_dir: str, top: str = "", bd: str = "", use_vivado: str 
     elif kind in ("hwh", "xsa"):
         design = hwh.parse(main)
     elif kind == "bdtcl":
-        design = bdtcl.parse(main)
-        if design["meta"].get("incomplete") and not vivado:
-            log("note: %s uses apply_bd_automation; static view is partial" % rel(main))
+        design = bdtcl.parse(main, search=rundirs + [root])
+        if design["meta"].get("incomplete"):
+            log("note: %s uses apply_bd_automation; static view is partial%s" % (
+                rel(main), " (exact: --vivado on)" if vivado else ""))
+        if not design["meta"].get("part"):
+            design["meta"]["part"] = _part_near(main)
     rtl_files = [p for p in (xp.get("srcs") or []) if os.path.isfile(p)] or inv.get("hdl", [])
-    mods = hdl.parse_files(rtl_files)
+    mods = hdl.parse_files(rtl_files, incdirs)
     if design is None:
         design = M.new_design(top or (xp.get("top") if xp else "") or "rtl")
     ids, roots = hdl.build_defs(design, mods, rel) if mods else ({}, [])

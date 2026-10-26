@@ -96,8 +96,8 @@ def resolve_clock(cx: _Ctx, path: str, net: str, depth: int = 0):
         return None
     by_name, by_end = cx.nets_of(path)
     n = by_name.get(net)
-    if n is None:
-        return None
+    if n is None or n["kind"] == "bus":
+        return None  # never trace a clock through an interface bundle
     body = cx.bodies[path]
     res = None
     for inst, pin in n["ends"]:
@@ -108,12 +108,24 @@ def resolve_clock(cx: _Ctx, path: str, net: str, depth: int = 0):
         pp = M.pin_index(idef).get(pin) if idef else None
         if not pp or pp["dir"] != "out":
             continue
+        if idef["kind"] == "comb" and len(idef.get("deps", {}).get(pin, [])) == 1:
+            upnet = by_end.get((inst, idef["deps"][pin][0]))  # assign clk_o = clk_i;
+            if upnet:
+                res = resolve_clock(cx, path, upnet, depth + 1)
+                if res:
+                    break
+            continue
+        if cx.leaf(cpath) and idef["kind"] not in ("reg",) and pp["kind"] not in ("clk",) \
+                and not CLK_BUF.match(idef["name"]) and not CLK_GEN.match(idef["name"]):
+            continue  # a data output (e.g. RAM doB) is not a clock source
         if not cx.leaf(cpath):
             inner = cx.nets_of(cpath)[1].get(("", pin))
             if inner:
                 res = resolve_clock(cx, cpath, inner, depth + 1)
                 if res:
                     break
+            if pp["kind"] != "clk":
+                continue  # a submodule data output that is not driven by a clock source
         if CLK_BUF.match(idef["name"]):
             for q in idef["pins"]:
                 if q["dir"] == "in" and q["name"].upper().startswith("I"):
@@ -351,6 +363,18 @@ def _clock_nets(cx):
                     cx.netdom[path + "|" + n["name"]] = [d]
 
 
+def name_domains(domains):
+    """Short unique names: 'pl_clk0', or 'zynq_ultra_ps_e_0/pl_clk0' when two sources share a pin name."""
+    by = {}
+    for k, v in domains.items():
+        by.setdefault(v["name"], []).append(k)
+    for name, ks in by.items():
+        if len(ks) > 1:
+            for k in ks:
+                parts = [p for p in k.replace("port:", "").split("/") if p]
+                domains[k]["name"] = "/".join(parts[-2:]) if len(parts) >= 2 else k
+
+
 def dname(cx, d):
     info = cx.domains.get(d, {})
     f = info.get("freq")
@@ -505,6 +529,7 @@ def run(design: dict) -> dict:
     cx = _Ctx(design)
     _clock_nets(cx)
     evaluate(cx, "", {})
+    name_domains(cx.domains)
     findings = structural(design, cx) + cdc_findings(cx)
     design["domains"] = cx.domains
     design["netdom"] = cx.netdom

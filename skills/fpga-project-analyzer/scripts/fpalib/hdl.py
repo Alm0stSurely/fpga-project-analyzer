@@ -102,7 +102,24 @@ class _T:
         return self.v
 
 
-def _v_clean(text):
+_INCLUDE = re.compile(r'^\s*`include\s+"([^"]+)"')
+
+
+def _v_clean(text, file="", incdirs=(), depth=0):
+    if depth < 8 and "`include" in text:
+        lines = text.split("\n")
+        for k, line in enumerate(lines):
+            m = _INCLUDE.match(line)
+            inc = _find_include(m.group(1), file, incdirs) if m else None
+            if inc:
+                try:
+                    with open(inc, encoding="utf-8", errors="replace") as f:
+                        body = _v_clean(f.read(), inc, incdirs, depth + 1)
+                    lines[k] = " ".join(body.split("\n"))  # one line keeps the outer line numbers
+                except OSError:
+                    pass
+        text = "\n".join(lines)
+
     def rep(m):
         if m.group(1):
             return '""'
@@ -120,6 +137,15 @@ def _v_clean(text):
         else:
             out.append(line)
     return "\n".join(out)
+
+
+def _find_include(name, file, incdirs):
+    import os
+    for d in [os.path.dirname(file)] + list(incdirs):
+        p = os.path.join(d, name)
+        if os.path.isfile(p):
+            return p
+    return None
 
 
 def _v_tokens(text):
@@ -180,6 +206,11 @@ def _ids(toks, skip_index=False):
         elif t.v == "]":
             d -= 1
         elif t.k == "id" and t.v not in _V_KW and not (skip_index and d):
+            if idx and toks[idx - 1].v == ".":
+                continue  # the member part of bus.member (emitted with its base below)
+            if idx + 2 < len(toks) and toks[idx + 1].v == "." and toks[idx + 2].k == "id":
+                out.append(t.v + "." + toks[idx + 2].v)  # interface/struct member: one signal per member
+                continue
             if idx + 1 < len(toks) and toks[idx + 1].v == "(" and idx and toks[idx - 1].v != ".":
                 continue  # function call name
             if "::" in t.v:
@@ -222,8 +253,11 @@ class _VModule:
         self.lang = "verilog"
 
 
-def parse_verilog(text: str, file: str) -> list:
-    toks = _v_tokens(_v_clean(text))
+INTERFACES = set()
+
+
+def parse_verilog(text: str, file: str, incdirs=()) -> list:
+    toks = _v_tokens(_v_clean(text, file, incdirs))
     mods, i, n = [], 0, len(toks)
     while i < n:
         v = toks[i].v
@@ -242,6 +276,8 @@ def parse_verilog(text: str, file: str) -> list:
                 and (i == 0 or toks[i - 1].v not in (".",)):
             endkw = {"interface": "endinterface", "package": "endpackage", "program": "endprogram",
                      "class": "endclass"}[v]
+            if v == "interface":
+                INTERFACES.add(toks[i + 1].v)
             while i < n and toks[i].v != endkw:
                 i += 1
             i += 1
@@ -406,8 +442,13 @@ def _proc_rw(toks):
 
 
 def _rst_pol(cond, name):
-    """'low' if the reset is tested active-low (!rst, ~rst, rst == 0, rst = '0')."""
-    vs = [t.v for t in cond]
+    """'low' if the reset is tested active-low (!rst, ~rst, rst == 0, rst = '0'); None if not found."""
+    vs = []
+    for t in cond:  # fold bus.member into one token
+        if len(vs) >= 2 and vs[-1] == "." and t.k == "id":
+            vs[-2:] = [vs[-2] + "." + t.v]
+        else:
+            vs.append(t.v)
     for k, v in enumerate(vs):
         if v != name:
             continue
@@ -417,7 +458,7 @@ def _rst_pol(cond, name):
             lit = vs[k + 2].replace(" ", "")
             return "low" if lit in ("0", "'0'", "1'b0", "'b0", "1'h0", "false") else "high"
         return "high"
-    return "high"
+    return None
 
 
 def _uniq(it):
@@ -509,9 +550,11 @@ def _v_body(m: _VModule, toks, env):
                 if j + 1 < n and toks[j + 1].v == "(":
                     k = _close(toks, j + 1)
                     sens = toks[j + 2:k]
-                    for a, b in zip(sens, sens[1:]):
+                    for k2, (a, b) in enumerate(zip(sens, sens[1:])):
                         if a.v in ("posedge", "negedge") and b.k == "id":
-                            edges.append((a.v, b.v))
+                            member = k2 + 3 < len(sens) and sens[k2 + 2].v == "."
+                            # interface member clock (posedge lb.clk): keep the dotted name; it stays unresolved
+                            edges.append((a.v, b.v + "." + sens[k2 + 3].v if member else b.v))
                     j = k + 1
                 else:
                     j += 2  # @*
@@ -1073,6 +1116,8 @@ def build_defs(design: dict, modules: list, rel=lambda p: p):
     ids = {}
     for key, m in by_name.items():
         ids[key] = "rtl:" + m.name
+    members = {m.name: _members(m) for m in by_name.values()}
+    _propagate_members(by_name, members)
     instantiated = set()
     for key, m in by_name.items():
         env = _int_env(m.params)
@@ -1096,7 +1141,18 @@ def build_defs(design: dict, modules: list, rel=lambda p: p):
         lower = {p.lower(): p for p in portnames} if m.lang == "vhdl" else None
         for pn in m.order:
             touch(pn, ["", pn])
+        iface = {pn for pn in m.order if m.ports[pn].get("kind") == "bus"}
+        mine = members[m.name]
+        for x in mine:
+            touch(x, ["", x])
+        aliases = []
         for inst in m.insts:
+            if inst["type"] in INTERFACES:
+                iface.add(inst["name"])
+                for port, expr in inst["conns"].items():  # interface ports: bram_if b(.clk(clk))
+                    for s2 in _conn_ids(expr, m.lang)[:1]:
+                        aliases.append((inst["name"] + "." + port, s2))
+                continue
             callee = by_name.get(inst["type"]) or by_name.get(inst["type"].lower())
             if callee:
                 cid = ids[callee.name.lower() if callee.lang == "vhdl" else callee.name]
@@ -1128,16 +1184,31 @@ def build_defs(design: dict, modules: list, rel=lambda p: p):
             for formal, expr in conns.items():
                 if bbdef is not None and formal not in M.pin_index(bbdef):
                     bbdef["pins"].append(M.pin(formal, "out" if _PRIM_OUT.match(formal) else "in"))
-                for s in _conn_ids(expr, m.lang):
+                cids = _conn_ids(expr, m.lang)
+                for s in cids:
                     if lower is not None:
                         s = lower.get(s.lower(), s)
                     touch(s, [inst["name"], formal])
-        _logic_nodes(design, m, d, touch, rel(m.file))
+                    if s in mine and callee and callee.ports.get(formal, {}).get("dir") == "out":
+                        mine[s] = "out"  # member driven by a child output
+                if callee and callee.ports.get(formal, {}).get("kind") == "bus" and cids:
+                    base = cids[0].split(".")[0]
+                    for cm in members.get(callee.name, {}):
+                        if cm.startswith(formal + "."):
+                            touch(base + "." + cm[len(formal) + 1:], [inst["name"], cm])
+                            if base + "." + cm[len(formal) + 1:] in mine and members[callee.name][cm] == "out":
+                                mine[base + "." + cm[len(formal) + 1:]] = "out"
+        _logic_nodes(design, m, d, touch, rel(m.file), iface)
+        for a, b in aliases:
+            if a in sig:
+                sig.setdefault(b, []).extend(sig.pop(a))
+        for x, dr in mine.items():
+            d["pins"].append(M.pin(x, "out" if dr == "out" else "in", "clk" if dr == "clk" else "", member=True))
         for s, ends in sig.items():
             if len(ends) < 2:
                 continue
             w = m.ports[s].get("w") if s in m.ports else m.signals.get(s)
-            net = {"name": s, "kind": "", "ends": ends}
+            net = {"name": s, "kind": "bus" if s in iface else "", "ends": ends}
             if w:
                 net["w"] = w
             d["nets"].append(net)
@@ -1147,7 +1218,65 @@ def build_defs(design: dict, modules: list, rel=lambda p: p):
     return ids, roots
 
 
-def _logic_nodes(design, m, d, touch, src_file):
+def _propagate_members(by_name, members):
+    """A module that passes an interface port down inherits the members its children use."""
+    for _ in range(24):
+        changed = False
+        for m in by_name.values():
+            ports = {pn for pn in m.order if m.ports[pn].get("kind") == "bus"}
+            mine = members[m.name]
+            for inst in m.insts:
+                callee = by_name.get(inst["type"]) or by_name.get(inst["type"].lower())
+                if not callee:
+                    continue
+                for formal, expr in inst["conns"].items():
+                    if callee.ports.get(formal, {}).get("kind") != "bus":
+                        continue
+                    cids = _conn_ids(expr, m.lang)
+                    base = cids[0].split(".")[0] if cids else ""
+                    if base not in ports:
+                        continue
+                    for cm, how in list(members[callee.name].items()):
+                        if not cm.startswith(formal + "."):
+                            continue
+                        x = base + "." + cm[len(formal) + 1:]
+                        if x not in mine or (how == "out" and mine[x] != "out"):
+                            mine[x] = how
+                            changed = True
+        if not changed:
+            return
+
+
+def _members(m):
+    """Interface-port members a module uses ("bus.clk") -> 'clk' | 'out' | 'in'."""
+    ports = {pn for pn in m.order if m.ports[pn].get("kind") == "bus"}
+    use = {}
+
+    def mark(x, how):
+        if "." in x and x.split(".")[0] in ports:
+            if use.get(x) not in ("clk",) and (how != "in" or x not in use):
+                use[x] = how
+
+    for p in m.procs:
+        if p.get("clk"):
+            mark(p["clk"], "clk")
+        for x in p["r"] + ([p["rst"]] if p.get("rst") else []):
+            mark(x, "in")
+        for x in p["w"]:
+            mark(x, "out")
+    for a in m.assigns:
+        for x in a["r"]:
+            mark(x, "in")
+        for x in a["w"]:
+            mark(x, "out")
+    for inst in m.insts:
+        for expr in inst["conns"].values():
+            for x in _conn_ids(expr, m.lang):
+                mark(x, "in")
+    return use
+
+
+def _logic_nodes(design, m, d, touch, src_file, iface=()):
     """One node per always/process block and per continuous assignment."""
     defs = design["defs"]
     blocks = list(m.procs)
@@ -1160,8 +1289,10 @@ def _logic_nodes(design, m, d, touch, src_file):
         blocks.append(dict(a, kind=a.get("kind", "assign")))
     used = {i["name"] for i in d["insts"]}
     known = set(m.order) | set(m.signals)
+    bases = known | set(iface)
+    ok = lambda x: x in known or ("." in x and x.split(".")[0] in bases)
     for k, b in enumerate(blocks):
-        b = dict(b, w=[x for x in b["w"] if x in known] or b["w"], r=[x for x in b["r"] if x in known])
+        b = dict(b, w=[x for x in b["w"] if ok(x)] or b["w"], r=[x for x in b["r"] if ok(x)])
         if not b["w"]:
             continue
         base = b.get("label") or (b["w"][0] + ("_reg" if b["kind"] == "ff" else ""))
@@ -1193,6 +1324,11 @@ def _logic_nodes(design, m, d, touch, src_file):
         for s in b["w"]:
             ld["pins"].append(M.pin(s, "out", "data"))
             touch(s, [name, s])
+        if kind == "comb":
+            if b.get("label") == "assigns":
+                ld["deps"] = {w: a["r"] for a in m.assigns for w in a["w"] if ok(w)}
+            else:
+                ld["deps"] = {w: b["r"] for w in b["w"]}
         if kind == "reg":
             ld["nregs"] = len(b["w"])
         defs[did] = ld
@@ -1205,6 +1341,9 @@ def _finish_kinds(design, rtl_ids):
         d = defs[rid]
         nets = []
         for net in d["nets"]:
+            if net["kind"] == "bus":  # SystemVerilog interface bundle
+                nets.append(net)
+                continue
             kinds = set()
             for inst, p in net["ends"]:
                 target = d if inst == "" else defs.get(next((i["def"] for i in d["insts"] if i["name"] == inst), ""))
@@ -1216,8 +1355,10 @@ def _finish_kinds(design, rtl_ids):
         d["nets"] = nets
 
 
-def parse_files(paths: list) -> list:
+def parse_files(paths: list, incdirs=()) -> list:
+    import os
     mods = []
+    incdirs = list(dict.fromkeys(list(incdirs) + [os.path.dirname(p) for p in paths]))
     for p in paths:
         try:
             with open(p, encoding="utf-8", errors="replace") as f:
@@ -1228,7 +1369,7 @@ def parse_files(paths: list) -> list:
         if low.endswith((".vhd", ".vhdl")):
             mods.extend(parse_vhdl(text, p))
         else:
-            mods.extend(parse_verilog(text, p))
+            mods.extend(parse_verilog(text, p, incdirs))
     for m in mods:
         for b in m.procs:
             b.setdefault("file", m.file)

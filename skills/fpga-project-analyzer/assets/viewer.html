@@ -226,6 +226,7 @@ function title(d) {
   return TITLES[d.name] || d.name;
 }
 function pinLabel(p) {
+  if (p.disp) return p.disp;
   let s = p.name;
   if (p.kind !== "bus" && p.w > 1 && !/\[/.test(s)) s += p.range && /^\[/.test(p.range) && p.range.length < 14 ? p.range : "[" + (p.w - 1) + ":0]";
   return s;
@@ -235,7 +236,7 @@ function dname(d) { const i = DOMS[d] || {}; return (i.name || d) + (i.freq ? " 
 
 /* ---------- graph construction ---------- */
 function visiblePins(d, boundary) {
-  return d.pins.filter(p => S.unc || !p.unc || (p.kind === "clk" && p.dir === "in" && !boundary));
+  return d.pins.filter(p => !p.member && (S.unc || !p.unc || (p.kind === "clk" && p.dir === "in" && !boundary)));
 }
 function addrOf(fullPath) {
   const bdp = (D.meta && D.meta.bd_path) || "";
@@ -243,11 +244,43 @@ function addrOf(fullPath) {
   const top = bd && bodyOf(bd);
   return ((top && top.addr) || []).filter(a => !a.excluded && (a.slave === fullPath || bdp + a.slave === fullPath) && !/DDR/i.test(a.block || ""));
 }
+const PIN_GROUP_MIN = 24, PORT_GROUP_MIN = 16, STACK_MIN = 3;
+const skel = s => s.replace(/\d+/g, "#");
+function rangeName(names) {
+  const runs = names.map(n => n.match(/\d+/g) || []);
+  let k = 0;
+  return names[0].replace(/\d+/g, m0 => {
+    const nums = runs.map(r => Number(r[k])); k++;
+    const lo = Math.min(...nums), hi = Math.max(...nums);
+    return lo === hi ? m0 : "[" + String(lo).padStart(m0.length, "0") + "-" + String(hi).padStart(m0.length, "0") + "]";
+  });
+}
+/* many same-pattern pins (DAC00..DAC33_M_AXIS) -> one pin "DAC[00-33]_M_AXIS ×16" */
+function groupPins(pins, limit) {
+  if (pins.length <= limit) return pins.map(p => Object.assign({}, p, {members: [p.name]}));
+  const buckets = new Map();
+  for (const p of pins) { const k = skel(p.name) + "|" + p.dir + "|" + p.kind; if (!buckets.has(k)) buckets.set(k, []); buckets.get(k).push(p); }
+  const out = [];
+  for (const ps of buckets.values()) {
+    if (ps.length >= 3 && /\d/.test(ps[0].name))
+      out.push(Object.assign({}, ps[0], {name: "g:" + skel(ps[0].name) + ":" + ps[0].dir, disp: rangeName(ps.map(p => p.name)) + " ×" + ps.length,
+        members: ps.map(p => p.name), group: true, w: null}));
+    else ps.forEach(p => out.push(Object.assign({}, p, {members: [p.name]})));
+  }
+  return out;
+}
+/* actual pin name -> displayed pin name (groups, and interface members drawn at their interface pin) */
+function pinMap(def, shown) {
+  const m = {};
+  for (const dp of shown) for (const n of dp.members) m[n] = dp.name;
+  for (const p of def.pins) if (p.member && !m[p.name]) { const b = p.name.split(".")[0]; if (m[b]) m[p.name] = m[b]; }
+  return m;
+}
 function build(parts) {
   const d = defAt(parts), body = bodyOf(d), lk = lvlKey(parts);
   const nodes = [], edges = [], meta = {};
-  const bpins = visiblePins(body, true);
-  for (const p of bpins) {
+  const bshown = groupPins(visiblePins(body, true), PORT_GROUP_MIN), bmap = pinMap(body, bshown);
+  for (const p of bshown) {
     const w = Math.ceil(tw(pinLabel(p), 11)) + 30, inb = p.dir === "in";
     const id = "p:" + p.name;
     nodes.push({id, width: w, height: 20, ports: [{id: id + "::" + p.name, x: inb ? w : 0, y: 10, width: 1, height: 1,
@@ -255,50 +288,78 @@ function build(parts) {
       layoutOptions: {"elk.portConstraints": "FIXED_POS", "elk.layered.layering.layerConstraint": inb ? "FIRST_SEPARATE" : "LAST_SEPARATE"}});
     meta[id] = {type: "port", pin: p};
   }
+  // repeated instances (qubit_command0..7_mem) become one stacked card
+  const groups = new Map();
   for (const inst of body.insts) {
-    const cd = defs[inst.def], id = "i:" + inst.name, full = pstr(parts.concat(inst.name));
-    const pins = visiblePins(cd, false).slice().sort((a, b) => (KORD[a.kind] - KORD[b.kind]));
-    const L = pins.filter(p => p.dir === "in"), R = pins.filter(p => p.dir !== "in");
-    const lw = Math.max(0, ...L.map(p => tw(pinLabel(p), 10.5, p.kind === "bus"))), rw = Math.max(0, ...R.map(p => tw(pinLabel(p), 10.5, p.kind === "bus")));
-    const t = title(cd), note = NOTES[full];
-    const chips = [];
-    for (const a of addrOf(full)) chips.push(a.base.replace(/^0x(\w{4})(\w{4})$/, "0x$1_$2"));
-    const kinds = {}; for (const a of annOf(full)) kinds[a.kind] = (kinds[a.kind] || 0) + 1;
-    for (const k in kinds) chips.push(k.toUpperCase() + " " + kinds[k]);
-    const small = cd.kind === "reg" || cd.kind === "comb" || cd.kind === "latch" || cd.kind === "prim";
-    const rows = Math.max(L.length, R.length, small ? 1 : 2);
-    const bodyH = rows * 18 + (small ? 10 : 16);
-    const chipW = chips.reduce((s, c) => s + tw(c, 9.5) + 14, 0);
-    const W = Math.ceil(Math.max(small ? 70 : 120, lw + rw + (lw && rw ? 34 : 22), tw(inst.name, 12, true) + 10,
-      tw(t, 11) + 10, note ? tw(note, 10.5) + 10 : 0, chipW + 6, cd.kind === "ps" ? 150 : 0));
-    const top = 18, foot = (t ? 15 : 3) + (chips.length ? 17 : 0) + (note ? 14 : 0);
-    const H = top + bodyH + foot;
-    const ports = [];
-    const y0 = top + (bodyH - rows * 18) / 2 + 9;
-    L.forEach((p, i) => ports.push({id: id + "::" + p.name, x: 0, y: y0 + i * 18, width: 1, height: 1, layoutOptions: {"elk.port.side": "WEST"}}));
-    R.forEach((p, i) => ports.push({id: id + "::" + p.name, x: W, y: y0 + i * 18, width: 1, height: 1, layoutOptions: {"elk.port.side": "EAST"}}));
-    nodes.push({id, width: W, height: H, ports, layoutOptions: {"elk.portConstraints": "FIXED_POS"}});
-    meta[id] = {type: "inst", inst, def: cd, L, R, W, H, top, bodyH, y0, t, note, chips, full};
+    const cd = defs[inst.def], k = skel(inst.name) + "|" + cd.name + "|" + cd.kind;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(inst);
+  }
+  const nodeOf = {}, maps = {};
+  for (const [k, list] of groups) {
+    const stack = list.length >= STACK_MIN && /\d/.test(list[0].name);
+    const units = stack ? [list] : list.map(i => [i]);
+    for (const u of units) {
+      const inst = u[0], cd = defs[inst.def];
+      const id = stack ? "s:" + skel(inst.name) + ":" + cd.name : "i:" + inst.name;
+      u.forEach(i => nodeOf[i.name] = id);
+      const fulls = u.map(i => pstr(parts.concat(i.name)));
+      const shown = groupPins(visiblePins(cd, false), PIN_GROUP_MIN).sort((a, b) => (KORD[a.kind] - KORD[b.kind]));
+      maps[id] = pinMap(cd, shown);
+      const label = stack ? rangeName(u.map(i => i.name)) + " ×" + u.length : inst.name;
+      const L = shown.filter(p => p.dir === "in"), R = shown.filter(p => p.dir !== "in");
+      const lw = Math.max(0, ...L.map(p => tw(pinLabel(p), 10.5, p.kind === "bus"))), rw = Math.max(0, ...R.map(p => tw(pinLabel(p), 10.5, p.kind === "bus")));
+      const t = title(cd), note = NOTES[fulls[0]];
+      const chips = [];
+      if (!stack) for (const a of addrOf(fulls[0])) chips.push(a.base.replace(/^0x(\w{4})(\w{4})$/, "0x$1_$2"));
+      const kinds = {}; for (const f of fulls) for (const a of annOf(f)) kinds[a.kind] = (kinds[a.kind] || 0) + 1;
+      for (const kk in kinds) chips.push(kk.toUpperCase() + " " + kinds[kk]);
+      const small = cd.kind === "reg" || cd.kind === "comb" || cd.kind === "latch" || cd.kind === "prim";
+      const rows = Math.max(L.length, R.length, small ? 1 : 2);
+      const bodyH = rows * 18 + (small ? 10 : 16);
+      const chipW = chips.reduce((s2, c) => s2 + tw(c, 9.5) + 14, 0);
+      const W = Math.ceil(Math.max(small ? 70 : 120, lw + rw + (lw && rw ? 34 : 22), tw(label, 12, true) + 10,
+        tw(t, 11) + 10, note ? tw(note, 10.5) + 10 : 0, chipW + 6, cd.kind === "ps" ? 150 : 0));
+      const top = stack ? 24 : 18, foot = (t ? 15 : 3) + (chips.length ? 17 : 0) + (note ? 14 : 0);
+      const H = top + bodyH + foot + (stack ? 6 : 0);
+      const ports = [];
+      const y0 = top + (bodyH - rows * 18) / 2 + 9;
+      L.forEach((p, i) => ports.push({id: id + "::" + p.name, x: 0, y: y0 + i * 18, width: 1, height: 1, layoutOptions: {"elk.port.side": "WEST"}}));
+      R.forEach((p, i) => ports.push({id: id + "::" + p.name, x: W, y: y0 + i * 18, width: 1, height: 1, layoutOptions: {"elk.port.side": "EAST"}}));
+      nodes.push({id, width: W, height: H, ports, layoutOptions: {"elk.portConstraints": "FIXED_POS"}});
+      meta[id] = {type: "inst", inst, def: cd, L, R, W, H, top, bodyH, y0, t, note, chips, full: fulls[0], label,
+        stack: stack ? u : null, fulls, id};
+    }
   }
   const portSet = new Set(); nodes.forEach(n => n.ports.forEach(p => portSet.add(p.id)));
   const insts = Object.fromEntries(body.insts.map(i => [i.name, defs[i.def]]));
   const bidx = Object.fromEntries(body.pins.map(p => [p.name, p]));
+  const seen = new Map();
   for (const net of body.nets) {
     const ends = [];
+    let viaMember = false;
     for (const [i, p] of net.ends) {
-      const pid = i ? "i:" + i + "::" + p : "p:" + p + "::" + p;
+      const node = i ? nodeOf[i] : null, dp = i ? (maps[node] || {})[p] : bmap[p];
+      if (!dp) continue;
+      const pid = i ? node + "::" + dp : "p:" + dp + "::" + dp;
       if (!portSet.has(pid)) continue;
       const pin = i ? (insts[i] && insts[i].pins.find(x => x.name === p)) : bidx[p];
+      if (pin && pin.member) viaMember = true;
       const drv = pin ? (i ? pin.dir === "out" : pin.dir === "in") : false;
-      ends.push({pid, drv, inout: pin && pin.dir === "inout"});
+      ends.push({pid, node: i ? node : "p:" + dp, drv, inout: pin && pin.dir === "inout"});
     }
     if (ends.length < 2) continue;
     let src = ends.filter(e => e.drv);
     if (!src.length) src = ends.filter(e => e.inout).slice(0, 1);
     if (!src.length) src = [ends[0]];
     const sinks = ends.filter(e => !src.includes(e));
-    for (const s of src) for (const t of (sinks.length ? sinks : src.filter(x => x !== s)))
-      edges.push({id: "e" + edges.length, sources: [s.pid], targets: [t.pid], net: net.name, kind: net.kind, w: net.w});
+    for (const s2 of src) for (const t2 of (sinks.length ? sinks : src.filter(x => x !== s2))) {
+      if (s2.node === t2.node) continue;
+      const key = viaMember ? s2.pid + ">" + t2.node : s2.pid + ">" + t2.pid;  // one bus wire per interface pair
+      if (seen.has(key)) { seen.get(key).n++; continue; }
+      const e = {id: "e" + edges.length, sources: [s2.pid], targets: [t2.pid], net: net.name, kind: viaMember ? "bus" : net.kind, w: net.w, n: 1};
+      seen.set(key, e); edges.push(e);
+    }
   }
   const cr = edges.filter(e => e.kind === "clk" || e.kind === "rst").length;
   const tidy = S.tidy == null ? cr > 12 : S.tidy;
@@ -384,7 +445,8 @@ function badge(parent, x, y, fs) {
 function drawInst(gn, n, m, g) {
   const cd = m.def, W = n.width, grp = el("g", {class: "node k-" + cd.kind + (S.sel && S.sel.full === m.full ? " sel" : ""), transform: `translate(${n.x},${n.y})`, "data-id": n.id}, gn);
   const by = m.top, bh = m.bodyH;
-  const it = el("text", {x: W / 2, y: 12, "text-anchor": "middle", class: "iname"}, grp); it.textContent = m.inst.name;
+  const it = el("text", {x: W / 2, y: 12, "text-anchor": "middle", class: "iname"}, grp); it.textContent = m.label || m.inst.name;
+  if (m.stack) for (const o of [6, 3]) el("rect", {x: o, y: by - o, width: W - 6, height: bh, rx: 4, class: "box", opacity: .55}, grp);
   if (cd.kind === "reg") {
     el("rect", {x: 0, y: by, width: W, height: bh, rx: 2, class: "box"}, grp);
   } else if (cd.kind === "comb" || cd.kind === "latch") {
@@ -419,7 +481,7 @@ function drawInst(gn, n, m, g) {
     const t = el("text", {x: lx, y: y + 3.6, "text-anchor": left ? "start" : "end", class: "plabel" + (p.kind === "bus" ? " bus" : "") + (p.unc ? " unc" : "")}, grp);
     t.textContent = pinLabel(p);
     if (S.dom && p.kind === "clk") {
-      const dm = domOf(g.lk, netAt(g, m.inst.name, p.name));
+      const dm = domOf(g.lk, netAt(g, m.inst.name, (p.members || [p.name])[0]));
       if (dm && dm.length === 1) t.style.fill = DCOL[dm[0]];
     }
   });
@@ -437,7 +499,7 @@ function drawInst(gn, n, m, g) {
     fy += 13;
   }
   if (m.note) { fy += 12; const nt = el("text", {x: W / 2, y: fy, "text-anchor": "middle", class: "note"}, grp); nt.textContent = m.note; }
-  const fs = findingsUnder(m.full);
+  const fs = (m.fulls || [m.full]).flatMap(f => findingsUnder(f));
   if (fs.length) badge(grp, W - 1, by, fs);
   grp.addEventListener("click", ev => { ev.stopPropagation(); select({type: "inst", ...m}); });
   grp.addEventListener("dblclick", ev => { ev.stopPropagation(); if (drillable(cd)) go(S.path.concat(m.inst.name)); });
@@ -502,7 +564,7 @@ function legend() {
 function select(s) {
   S.sel = s;
   vp.querySelectorAll(".node.sel").forEach(x => x.classList.remove("sel"));
-  if (s && s.type === "inst") { const n = vp.querySelector(`[data-id="${CSS.escape("i:" + s.inst.name)}"]`); if (n) n.classList.add("sel"); }
+  if (s && s.type === "inst") { const n = vp.querySelector(`[data-id="${CSS.escape(s.id || "i:" + s.inst.name)}"]`); if (n) n.classList.add("sel"); }
   panel();
 }
 function peers(body, inst, pin) {
@@ -544,7 +606,14 @@ function panel() {
     if (p.phys) h += "<h3>Physical ports</h3>" + p.phys.map(x => `<span class="pill mono">${esc(x[0])}${x[1] != null ? "[" + x[1] + ":" + x[2] + "]" : ""}</span>`).join("");
   } else {
     const cd = s.def, full = s.full, body = G.body, inst = s.inst;
-    h += `<h2>${esc(inst.name)}</h2><div class="sub">${esc(title(cd) || cd.kind)}${cd.vlnv ? " · " + esc(cd.vlnv) : ""}</div>`;
+    h += `<h2>${esc(s.stack && !s.copyOf ? s.label : inst.name)}</h2><div class="sub">${esc(title(cd) || cd.kind)}${cd.vlnv ? " · " + esc(cd.vlnv) : ""}</div>`;
+    if (s.stack && !s.copyOf) {
+      h += `<h3>${s.stack.length} copies</h3><div>` + s.stack.map(i => {
+        const n = findingsUnder(pstr(S.path.concat(i.name))).length;
+        return `<span class="pill mono" style="cursor:pointer" data-pick="${esc(i.name)}">${esc(i.name)}${n ? " ⚠" + n : ""}</span>`;
+      }).join("") + `</div><div class="sub" style="margin-top:6px">Click a copy for its details; double-click the stack to open copy 0.</div>`;
+    }
+    if (s.copyOf) h += `<div class="sub"><a href="javascript:void 0" data-back="1">◂ all ${s.copyOf.stack.length} copies</a></div>`;
     if (drillable(cd)) h += `<button class="open" onclick="window.__fpa.go(${esc(JSON.stringify(S.path.concat(inst.name)))})">Open ▸</button> `;
     const src = (cd.impl && defs[cd.impl] && defs[cd.impl].src) || cd.src ||
       (inst.line && G.body.src ? {file: G.body.src.file, line: inst.line} : null);
@@ -573,6 +642,16 @@ function panel() {
   }
   P.innerHTML = h; P.hidden = false;
   P.querySelectorAll("[data-go]").forEach(x => x.onclick = () => reveal(x.getAttribute("data-go")));
+  P.querySelectorAll("[data-pick]").forEach(x => x.onclick = () => select(pick(s, x.getAttribute("data-pick"))));
+  P.querySelectorAll("[data-back]").forEach(x => x.onclick = () => select({type: "inst", ...s.copyOf}));
+}
+function metaFor(name) {
+  return G.meta["i:" + name] || Object.values(G.meta).find(m => m.stack && m.stack.some(i => i.name === name));
+}
+function pick(m, name) {  // one copy out of a stack
+  if (!m.stack) return {type: "inst", ...m};
+  const inst = m.stack.find(i => i.name === name) || m.stack[0];
+  return {type: "inst", ...m, inst, full: pstr(S.path.concat(inst.name)), fulls: [pstr(S.path.concat(inst.name))], copyOf: m};
 }
 function reveal(p) {
   const parts = p.split("/").filter(Boolean);
@@ -580,7 +659,7 @@ function reveal(p) {
   while (k > 0 && !defAt(parts.slice(0, k))) k--;
   const target = parts.slice(0, k);
   go(target.slice(0, -1), true);
-  setTimeout(() => { const m = G.meta["i:" + target[target.length - 1]]; if (m) select({type: "inst", ...m}); }, 60);
+  setTimeout(() => { const nm = target[target.length - 1]; const m = metaFor(nm); if (m) select(pick(m, nm)); }, 60);
 }
 
 /* ---------- pan & zoom ---------- */

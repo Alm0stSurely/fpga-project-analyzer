@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """fpa: FPGA project analyzer (AMD/Xilinx Vivado, PYNQ, HLS, Vitis, PetaLinux).
 
-  fpa.py build   [ROOT] [--top M] [--bd NAME] [--vivado auto|on|off]   -> ROOT/.fpa/design.json
+  fpa.py build   [ROOT] [--top M] [--bd NAME] [--src LIST]... [--vivado auto|on|off]  -> ROOT/.fpa/design.json
   fpa.py summary [ROOT]                     whole design in ~40 lines
   fpa.py show    [ROOT] BLOCK [--nets]      one block: pins, peers, nets, domains, address, regs, refs
   fpa.py findings [ROOT]                    all findings with detail and fix
@@ -47,7 +47,8 @@ def cmd_build(a):
     root = _root(a.root)
     out = os.path.join(root, ".fpa")
     os.makedirs(out, exist_ok=True)
-    d = B.build(root, out, top=a.top or "", bd=a.bd or "", use_vivado=a.vivado, log=lambda m: print(m, file=sys.stderr))
+    d = B.build(root, out, top=a.top or "", bd=a.bd or "", use_vivado=a.vivado, log=lambda m: print(m, file=sys.stderr),
+                srcs=a.src)
     M.save(d, _db(root))
     print(S.summary(d))
     print("\nsaved %s" % _disp(_db(root)))
@@ -115,7 +116,10 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="fpa.py", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("build"); p.add_argument("root", nargs="?"); p.add_argument("--top"); p.add_argument("--bd")
-    p.add_argument("--vivado", default="auto", choices=["auto", "on", "off"]); p.set_defaults(f=cmd_build)
+    p.add_argument("--vivado", default="auto", choices=["auto", "on", "off"])
+    p.add_argument("--src", action="append", help="explicit sources instead of scanning: file, dir, glob, or a file "
+                   "list (make .d, .f, .lst); repeatable")
+    p.set_defaults(f=cmd_build)
     p = sub.add_parser("summary"); p.add_argument("root", nargs="?"); p.set_defaults(f=cmd_summary)
     p = sub.add_parser("show"); p.add_argument("args", nargs="+", metavar="[ROOT] BLOCK")
     p.add_argument("--nets", action="store_true", help="list the nets inside the block (names for overlay flows)")

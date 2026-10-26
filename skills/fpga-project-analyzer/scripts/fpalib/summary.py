@@ -121,9 +121,10 @@ def summary(design: dict) -> str:
         for k, v in design.get("netdom", {}).items():
             for dd in v:
                 cnt[dd] = cnt.get(dd, 0) + 1
+        ranked = sorted(doms.items(), key=lambda kv: -cnt.get(kv[0], 0))
         out.append("clock domains: " + ", ".join(
             "%s%s (%d nets)" % (v["name"], " %g MHz" % (v["freq"] / 1e6) if v.get("freq") else "", cnt.get(k, 0))
-            for k, v in doms.items()))
+            for k, v in ranked[:10]) + (" +%d more" % (len(ranked) - 10) if len(ranked) > 10 else ""))
     if body is not None:
         streams, mm = [], []
         for n in body["nets"]:

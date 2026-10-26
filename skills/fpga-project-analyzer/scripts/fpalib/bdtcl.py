@@ -119,7 +119,9 @@ class _BD:
 class Interp:
     MAX_STEPS = 200000
 
-    def __init__(self):
+    def __init__(self, search=()):
+        self.search = list(search)
+        self.sourced = []
         self.bd = _BD()
         self.procs = {}
         self.cur = "/"
@@ -174,6 +176,17 @@ class Interp:
                 break
             result = self.cmd(raw, frame)
         return result
+
+    def source(self, path, frame):
+        import os
+        cands = [path] if os.path.isabs(path) else [os.path.join(d, path) for d in self.search]
+        for c in cands:
+            c = os.path.normpath(c)
+            if os.path.isfile(c) and c not in self.sourced and len(self.sourced) < 64:
+                self.sourced.append(c)
+                with open(c, encoding="utf-8", errors="replace") as f:
+                    return self.run(f.read(), frame)
+        return ""
 
     # -- paths --------------------------------------------------------
     def abspath(self, name: str) -> str:
@@ -238,7 +251,9 @@ class Interp:
                 frame[var] = it
                 self.run(raw[3][1], frame)
             return ""
-        if name in ("for", "while", "switch", "return", "break", "continue", "namespace", "source"):
+        if name == "source" and len(raw) >= 2:
+            return self.source(self.words(raw[1:], frame)[-1], frame)
+        if name in ("for", "while", "switch", "return", "break", "continue", "namespace"):
             return ""
         args = self.words(raw[1:], frame)
         if name in ("variable", "global"):
@@ -548,12 +563,16 @@ def build(it: Interp, path: str) -> dict:
     return design
 
 
-def parse(path: str) -> dict:
+def parse(path: str, search=()) -> dict:
+    import os
     with open(path, encoding="utf-8", errors="replace") as f:
         script = f.read()
-    it = Interp()
+    it = Interp(list(search) + [os.path.dirname(os.path.abspath(path))])
     it.run(script, it.globals)
-    return build(it, path)
+    d = build(it, path)
+    for p in it.sourced:
+        M.add_source(d, "bdtcl", p)
+    return d
 
 
 def looks_like_bd(text: str) -> bool:
