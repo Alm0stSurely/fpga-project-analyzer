@@ -1,0 +1,15 @@
+{
+  "name": "fpga-project-analyzer",
+  "owner": {"name": "Abdullah AlNafisah", "url": "https://github.com/al-nafisah"},
+  "metadata": {"description": "FPGA project analysis skills for AI coding agents", "version": "0.1.0"},
+  "plugins": [
+    {
+      "name": "fpga-project-analyzer",
+      "source": "./",
+      "description": "Explain and review existing AMD/Xilinx FPGA projects with drill-down Vivado-style diagrams and clock-domain, constraint and overlay checks.",
+      "version": "0.1.0",
+      "category": "development",
+      "keywords": ["fpga", "vivado", "zynq", "pynq", "rtl", "cdc"]
+    }
+  ]
+}

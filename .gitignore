@@ -1,0 +1,9 @@
+.fpa/
+__pycache__/
+*.pyc
+.Xil/
+*.jou
+vivado*.log
+vivado*.str
+examples/*/vivado/
+.DS_Store

@@ -1,0 +1,376 @@
+"""Find a project's sources, pick the best extractor for each, and assemble one design."""
+from __future__ import annotations
+
+import glob
+import os
+import re
+import shutil
+import xml.etree.ElementTree as ET
+
+from . import bdjson, bdtcl, hdl, hwh, lint, model as M, refs, reports, xdc
+
+SKIP_DIRS = {".git", ".svn", ".Xil", "node_modules", ".fpa", "__pycache__", ".ipynb_checkpoints", ".venv", "venv"}
+GEN_SUFFIX = (".cache", ".hw", ".ip_user_files", ".sim", ".runs", ".gen")
+EXT = {
+    ".xpr": "xpr", ".bd": "bd", ".hwh": "hwh", ".xsa": "xsa", ".bit": "bit", ".xdc": "xdc", ".v": "hdl",
+    ".sv": "hdl", ".vh": "hdl_inc", ".svh": "hdl_inc", ".vhd": "hdl", ".vhdl": "hdl", ".tcl": "tcl",
+    ".ipynb": "nb", ".py": "py", ".c": "c", ".h": "c", ".cc": "c", ".cpp": "c", ".hpp": "c", ".dts": "dt",
+    ".dtsi": "dt", ".rpt": "rpt", ".log": "log", ".dcp": "dcp", ".xci": "xci", ".bb": "yocto",
+    ".bbappend": "yocto",
+}
+
+
+def _generated(rel_parts):
+    return any(p.endswith(GEN_SUFFIX) for p in rel_parts)
+
+
+def scan(root: str) -> dict:
+    inv = {}
+    root = os.path.abspath(root)
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        rel_parts = os.path.relpath(dirpath, root).split(os.sep)
+        gen = _generated(rel_parts)
+        ipgen = "sources_1" in rel_parts and ("ip" in rel_parts or "bd" in rel_parts) and \
+            any(p.endswith(".srcs") for p in rel_parts)
+        for fn in filenames:
+            ext = os.path.splitext(fn)[1].lower()
+            kind = EXT.get(ext)
+            if fn == "component.xml":
+                kind = "ipxact"
+            if not kind:
+                continue
+            path = os.path.join(dirpath, fn)
+            if kind in ("hdl", "hdl_inc", "c", "py", "nb", "tcl") and (gen or ipgen):
+                if not (kind == "hdl" and fn.endswith("_wrapper.v")):
+                    continue
+            if kind == "xdc" and gen and not fn.endswith("board.xdc"):
+                continue
+            inv.setdefault(kind, []).append(path)
+    for k in inv:
+        inv[k].sort()
+    if "tcl" in inv:
+        bdt = []
+        for p in inv["tcl"]:
+            try:
+                with open(p, encoding="utf-8", errors="replace") as f:
+                    if bdtcl.looks_like_bd(f.read(200000)):
+                        bdt.append(p)
+            except OSError:
+                pass
+        if bdt:
+            inv["bdtcl"] = bdt
+    if "c" in inv:
+        hls = []
+        for p in inv["c"]:
+            try:
+                with open(p, encoding="utf-8", errors="replace") as f:
+                    if "#pragma hls" in f.read().lower():
+                        hls.append(p)
+            except OSError:
+                pass
+        if hls:
+            inv["hls"] = hls
+    return inv
+
+
+def find_vivado():
+    cands = []
+    w = shutil.which("vivado")
+    if w:
+        cands.append(w)
+    env = os.environ.get("XILINX_VIVADO")
+    if env:
+        cands.append(os.path.join(env, "bin", "vivado"))
+    for pat in ("/tools/Xilinx/Vivado/*/bin/vivado", "/tools/Xilinx/*/Vivado/bin/vivado",
+                "/opt/Xilinx/Vivado/*/bin/vivado", "/opt/Xilinx/*/Vivado/bin/vivado",
+                os.path.expanduser("~/Xilinx/Vivado/*/bin/vivado"), "C:/Xilinx/Vivado/*/bin/vivado.bat",
+                "C:/AMDDesignTools/*/Vivado/bin/vivado.bat"):
+        cands.extend(sorted(glob.glob(pat), reverse=True))
+    for c in cands:
+        if os.path.isfile(c):
+            m = re.search(r"(20\d\d\.\d)", c)
+            return c, (m.group(1) if m else "")
+    return None, ""
+
+
+def read_xpr(path: str) -> dict:
+    root = ET.parse(path).getroot()
+    pdir = os.path.dirname(os.path.abspath(path))
+    name = os.path.splitext(os.path.basename(path))[0]
+    subst = {"$PPRDIR": pdir, "$PSRCDIR": os.path.join(pdir, name + ".srcs"),
+             "$PGENDIR": os.path.join(pdir, name + ".gen"), "$PIPUSERFILESDIR": os.path.join(pdir, name + ".ip_user_files")}
+
+    def fix(p):
+        for k, v in subst.items():
+            p = p.replace(k, v)
+        return os.path.normpath(p)
+
+    info = {"name": name, "dir": pdir, "srcs": [], "xdc": [], "bd": [], "part": None, "top": None}
+    for opt in root.iter("Option"):
+        if opt.get("Name") == "Part" and not info["part"]:
+            info["part"] = opt.get("Val")
+    for fs in root.iter("FileSet"):
+        n = fs.get("Name")
+        if n not in ("sources_1", "constrs_1"):
+            continue
+        for f in fs.findall("File"):
+            p = fix(f.get("Path", ""))
+            low = p.lower()
+            if n == "constrs_1" and low.endswith(".xdc"):
+                info["xdc"].append(p)
+            elif low.endswith(".bd"):
+                info["bd"].append(p)
+            elif low.endswith((".v", ".sv", ".vhd", ".vhdl")):
+                info["srcs"].append(p)
+        cfg = fs.find("Config")
+        if n == "sources_1" and cfg is not None:
+            for opt in cfg.findall("Option"):
+                if opt.get("Name") == "TopModule":
+                    info["top"] = opt.get("Val")
+    return info
+
+
+def _stem(p):
+    return os.path.splitext(os.path.basename(p))[0]
+
+
+def choose_bd(inv: dict, xp: dict, want: str = ""):
+    """Return (kind, main_path, hwh_path) for the best Block Design source."""
+    bds = [p for p in (xp.get("bd") if xp else []) if os.path.isfile(p)] or inv.get("bd", [])
+    hwhs = inv.get("hwh", [])
+    names = [_stem(p) for p in bds] + [_stem(p) for p in hwhs] + [_stem(p) for p in inv.get("xsa", [])]
+    if want:
+        names = [n for n in names if n == want] or names
+    if bds:
+        bd = next((p for p in bds if _stem(p) in names[:1]), bds[0])
+        h = next((p for p in hwhs if _stem(p) == _stem(bd) and "hw_handoff" in p), None) or \
+            next((p for p in hwhs if _stem(p) == _stem(bd)), None)
+        return "bd", bd, h
+    if hwhs:
+        h = next((p for p in hwhs if _stem(p) in names[:1]), hwhs[0])
+        return "hwh", h, h
+    if inv.get("xsa"):
+        return "xsa", inv["xsa"][0], inv["xsa"][0]
+    if inv.get("bdtcl"):
+        return "bdtcl", inv["bdtcl"][0], None
+    return None, None, None
+
+
+def bd_prefix(design: dict) -> str:
+    return design["meta"].get("bd_path", "")
+
+
+def build(root: str, out_dir: str, top: str = "", bd: str = "", use_vivado: str = "auto", log=print) -> dict:
+    root = os.path.abspath(root)
+    rel = lambda p: os.path.relpath(p, root) if p and os.path.isabs(p) and p.startswith(root) else p
+    inv = scan(root)
+    xp = read_xpr(inv["xpr"][0]) if inv.get("xpr") else {}
+    kind, main, hwh_path = choose_bd(inv, xp, bd)
+    vivado, vver = find_vivado()
+    design = None
+    if kind == "bdtcl" and vivado and use_vivado != "off":
+        from . import vivado as V
+        got = V.export_bd(vivado, main, out_dir, part=xp.get("part") if xp else None,
+                          rtl=xp.get("srcs") or inv.get("hdl", []), log=log)
+        if got:
+            kind, main, hwh_path = "bd", got["bd"], got.get("hwh")
+    if kind == "bd":
+        design = bdjson.parse(main)
+        if hwh_path:
+            hwh.merge(design, hwh_path)
+    elif kind in ("hwh", "xsa"):
+        design = hwh.parse(main)
+    elif kind == "bdtcl":
+        design = bdtcl.parse(main)
+        if design["meta"].get("incomplete") and not vivado:
+            log("note: %s uses apply_bd_automation; static view is partial" % rel(main))
+    rtl_files = [p for p in (xp.get("srcs") or []) if os.path.isfile(p)] or inv.get("hdl", [])
+    mods = hdl.parse_files(rtl_files)
+    if design is None:
+        design = M.new_design(top or (xp.get("top") if xp else "") or "rtl")
+    ids, roots = hdl.build_defs(design, mods, rel) if mods else ({}, [])
+    meta = design["meta"]
+    meta.setdefault("part", xp.get("part") if xp else None)
+    if xp:
+        meta["part"] = meta.get("part") or xp.get("part")
+        M.add_source(design, "xpr", inv["xpr"][0])
+    if mods:
+        M.add_source(design, "rtl", "%d files" % len(rtl_files))
+    deep = sorted(glob.glob(os.path.join(out_dir, "deep_*.json")))
+    if deep:
+        from . import vivado as V
+        for dp in deep:
+            n = V.merge_deep(design, V.import_netlist(dp))
+            M.add_source(design, "vivado-rtl", dp)
+            log("merged Vivado netlist %s (%d modules)" % (os.path.basename(dp), n))
+    _graft(design, mods)
+    _pick_top(design, roots, top or (xp.get("top") if xp else ""))
+    for s in meta["sources"]:
+        s["path"] = rel(s["path"])
+    findings = []
+    findings += _io_check(design, (xp.get("xdc") if xp else []) or inv.get("xdc", []) +
+                          [p for p in inv.get("xdc", []) if p.endswith("board.xdc")], rel)
+    expect_bit = ""
+    if xp and xp.get("top"):
+        expect_bit = xp["top"] + ".bit"
+    elif design["top"].startswith("bd:"):
+        expect_bit = design["defs"][design["top"]]["name"] + "_wrapper.bit"  # make_wrapper default top
+    ann, rf = refs.scan(design, inv, rel, bitfiles=inv.get("bit", []), hwhfiles=inv.get("hwh", []) +
+                        inv.get("xsa", []), expect_bit=expect_bit)
+    design["annotations"] = ann
+    findings += rf
+    facts = reports.summarize(inv.get("rpt", []))
+    if facts:
+        design["reports"] = {k: {"file": rel(v["file"]), "data": v["data"]} for k, v in facts.items()}
+        findings += _report_findings(facts, rel)
+    findings += lint.run(design)["findings"]
+    for i, f in enumerate(findings, 1):
+        f["id"] = "L%d" % i
+    design["findings"] = findings
+    meta["root"] = root
+    meta["vivado"] = vver or None
+    meta["logs"] = _rank_logs(inv.get("log", []), rel)
+    meta["inventory"] = {k: len(v) for k, v in inv.items()}
+    return design
+
+
+def _rank_logs(paths, rel, limit=6):
+    """Logs with errors first (with counts), so the failing run is the one the agent opens."""
+    rows = []
+    for p in paths:
+        try:
+            if os.path.getsize(p) > 20_000_000:
+                continue
+            with open(p, encoding="utf-8", errors="replace") as f:
+                n = sum(1 for ln in f if ln.startswith("ERROR"))
+        except OSError:
+            continue
+        rows.append((-n, "impl" not in p, rel(p), n))
+    rows.sort()
+    return [r[2] + (" (%d errors)" % r[3] if r[3] else "") for r in rows[:limit]]
+
+
+def _graft(design, mods):
+    defs = design["defs"]
+    rtl = {k[4:].lower(): k for k in defs if k.startswith("rtl:")}
+    bd_top = design["top"] if design["top"].startswith("bd:") else ""
+    for did, d in list(defs.items()):
+        if d["kind"] == "modref" and d.get("ref"):
+            tgt = rtl.get(d["ref"].lower())
+            if tgt:
+                d["impl"] = tgt
+        elif d["kind"] in ("ip", "hls") and d.get("vlnv") and not d["vlnv"].startswith("xilinx.com:ip"):
+            tgt = rtl.get(d["name"].lower())
+            if tgt:
+                d["impl"] = tgt
+    if bd_top:
+        bname = defs[bd_top]["name"]
+        for d in defs.values():
+            for inst in d["insts"]:
+                if inst["def"] == "bb:" + bname:
+                    inst["def"] = bd_top
+        defs.pop("bb:" + bname, None)
+
+
+def _pick_top(design, roots, want):
+    defs = design["defs"]
+    bd_top = design["top"] if design["top"].startswith("bd:") else ""
+    cand = None
+    if want and "rtl:" + want in defs:
+        body = defs["rtl:" + want]
+        real = [i for i in body["insts"] if defs[i["def"]]["kind"] not in ("prim", "reg", "comb", "latch")]
+        if not bd_top or any(i["def"] != bd_top for i in real) or want == design.get("_force_top"):
+            cand = "rtl:" + want
+    if not cand and not bd_top and roots:
+        def size(did, seen=()):
+            d = defs[did]
+            return 1 + sum(size(i["def"], seen + (did,)) for i in d["insts"] if i["def"] not in seen + (did,))
+        roots = sorted(roots, key=lambda r: (not re.search(r"top|wrapper", r, re.I), -size(r)))
+        cand = roots[0]
+    if cand:
+        design["top"] = cand
+        if bd_top:
+            for path, d, inst in M.walk(design):
+                if inst["def"] == bd_top:
+                    design["meta"]["bd_path"] = path
+                    break
+    if not design["top"] and defs:
+        design["top"] = next(iter(defs))
+
+
+def _io_check(design, xdc_files, rel):
+    defs = design["defs"]
+    top = defs[design["top"]]
+    has_ps = any(d["kind"] == "ps" for d in defs.values())
+    port_bits = []
+    for p in top["pins"]:
+        if p["kind"] == "bus":
+            if p.get("bus") in ("ddrx", "ddr", "fixedio", "fixed_io") or p["name"] in ("DDR", "FIXED_IO"):
+                continue
+            for name, left, right in p.get("phys", []):
+                port_bits += xdc.bits(name, 0, left, right)
+        else:
+            if has_ps and p["name"].startswith(("DDR_", "FIXED_IO_")):
+                continue
+            port_bits += xdc.bits(p["name"], p.get("w") or 1)
+    if not port_bits:
+        return []
+    x = xdc.parse(xdc_files)
+    miss = xdc.unconstrained(port_bits, x)
+    out = []
+    if not xdc_files and miss:
+        names = sorted({b.split("[")[0] for b in miss})
+        return [{"sev": "high", "path": "/", "rule": "io-unconstrained",
+                 "title": "No XDC: %d top-level ports have no pin/IOSTANDARD" % len(names),
+                 "detail": ", ".join(names[:12]) + (" …" if len(names) > 12 else "") +
+                           ". write_bitstream fails with DRC NSTD-1 / UCIO-1.",
+                 "fix": "Add a constraints file (start from the board's master XDC).", "by": "lint"}]
+    groups = {}
+    for b, props in miss.items():
+        groups.setdefault((b.split("[")[0], tuple(props)), []).append(b)
+    for (base, props), bs in groups.items():
+        out.append({"sev": "high", "path": "/", "port": base, "rule": "io-unconstrained",
+                    "title": "%s: no %s" % (", ".join(bs[:6]) + (" …" if len(bs) > 6 else ""), " / ".join(props)),
+                    "detail": "write_bitstream fails with DRC NSTD-1 / UCIO-1." +
+                              ("" if xdc_files else " No XDC in project."),
+                    "fix": "set_property -dict {PACKAGE_PIN <pin> IOSTANDARD <std>} [get_ports {%s}]" % bs[0],
+                    "by": "lint"})
+    for t in xdc.unknown_targets(port_bits, x)[:10]:
+        out.append({"sev": "low", "path": "/", "rule": "xdc-unknown-port",
+                    "title": "XDC targets missing port %s" % t, "detail": "Vivado drops it ([Vivado 12-584]).",
+                    "by": "lint"})
+    return out
+
+
+def _report_findings(facts, rel):
+    out = []
+    t = facts.get("timing", {}).get("data") or {}
+    if t.get("wns") is not None and t["wns"] < 0:
+        out.append({"sev": "high", "path": "/", "rule": "timing-setup", "title": "Setup timing fails: WNS %.3f ns" % t["wns"],
+                    "detail": "%d failing endpoints" % t.get("tns_fail", 0), "by": "lint"})
+    if t.get("whs") is not None and t["whs"] < 0:
+        out.append({"sev": "high", "path": "/", "rule": "timing-hold", "title": "Hold timing fails: WHS %.3f ns" % t["whs"],
+                    "by": "lint"})
+    for k, v in (t.get("check_timing") or {}).items():
+        if k in ("no_clock", "unconstrained_internal_endpoints", "multiple_clock", "loops", "latch_loops"):
+            out.append({"sev": "med", "path": "/", "rule": "check-timing", "title": "check_timing: %s = %d" % (k, v),
+                        "by": "lint"})
+    c = facts.get("cdc", {}).get("data") or {}
+    crit = [r for r in c.get("summary", []) if r["sev"] == "Critical"]
+    if crit:
+        top = c.get("groups", [])[:3]
+        out.append({"sev": "high", "path": "/", "rule": "report-cdc",
+                    "title": "report_cdc: %d critical CDC paths (%s)" % (sum(r["n"] for r in crit),
+                                                                         ", ".join(r["id"] for r in crit)),
+                    "detail": "; ".join("%s→%s %s → %s" % (g["from_clk"], g["to_clk"], g["from"].rsplit("/", 1)[-1],
+                                                          g["to"].rsplit("/", 1)[-1]) for g in top),
+                    "by": "lint"})
+    meth = facts.get("methodology", {}).get("data") or []
+    for r in meth:
+        if r["id"] in ("TIMING-6", "TIMING-7", "TIMING-9", "TIMING-10", "TIMING-14", "TIMING-16"):
+            out.append({"sev": "med", "path": "/", "rule": "methodology", "title": "%s ×%d %s" % (r["id"], r["n"], r["desc"]),
+                        "detail": "Clocks are timed as related; any crossing between them needs a synchronizer "
+                                  "and set_clock_groups -asynchronous." if r["id"] in ("TIMING-6", "TIMING-7") else "",
+                        "by": "lint"})
+    return out

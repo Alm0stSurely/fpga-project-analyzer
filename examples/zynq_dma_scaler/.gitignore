@@ -1,0 +1,6 @@
+vivado/
+.Xil/
+*.jou
+*.log
+!expected/*.log
+.fpa/
