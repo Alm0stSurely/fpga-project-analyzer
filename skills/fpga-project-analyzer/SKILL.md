@@ -12,6 +12,8 @@ Scripts read the project; you read their compact output. Do not open .bd/.hwh/.x
 ## Workflow
 1. `FPA build <project>` - extracts everything, runs the checks, prints a ~40-line summary
    (blocks, clock domains, streams, AXI-MM, IRQ -> GIC/DT numbers, address map, software refs, reports, findings).
+   Repo with several boards/builds or a Makefile flow: point it at the build's own lists instead of scanning,
+   e.g. `--src sim/plps.d --src sim/psbd.d` (make .d / .f / .lst files, dirs or globs; repeatable).
 2. Drill into what matters, never the whole tree:
    - `FPA show <project> <block>` one block (`/` = top, `/stream_proc/scaler_0` = nested): pins, peers,
      net names, clock domains, address, registers, software refs, src file:line; add `--nets` to list the

@@ -158,6 +158,35 @@ def resolve_clock(cx: _Ctx, path: str, net: str, depth: int = 0):
     return res
 
 
+def clockmap_domain(cx, path, name, idef):
+    """Exact clock from a Vivado clock map, matched by hierarchy + register name (<signal>_reg)."""
+    for cm in cx.design.get("clockmaps", []):
+        for prefix in cm["prefixes"]:
+            if path != prefix and not path.startswith(prefix + "/"):
+                continue
+            rel = path[len(prefix):].strip("/")
+            cands = [name] + [q["name"] + "_reg" for q in idef["pins"] if q["dir"] == "out"]
+            for c in cands:
+                info = cm["regs"].get((rel + "/" if rel else "") + c)
+                if info:
+                    return _clockmap_source(cx, prefix, info)
+    return None
+
+
+def _clockmap_source(cx, prefix, info):
+    root, drv = info
+    if drv and "/" not in drv and prefix in cx.parents:  # a top-level port of the module: continue outside
+        ppath, iname = cx.parents[prefix]
+        upnet = cx.nets_of(ppath)[1].get((iname, drv))
+        d = resolve_clock(cx, ppath, upnet) if upnet else None
+        if d:
+            return d
+    src = drv or root
+    cell = src.rsplit("/", 1)[0] if "/" in src else ""
+    gen = prefix + "/" + cell if cell and re.search(r"(mmcm|pll|clk_wiz|clkgen)", cell, re.I) else None
+    return cx.dom(prefix + "/" + src, None, gen)
+
+
 def _related(cx, a, b):
     ga = cx.domains.get(a, {}).get("group")
     gb = cx.domains.get(b, {}).get("group")
@@ -204,6 +233,8 @@ def evaluate(cx: _Ctx, path: str, ctx: dict, depth: int = 0) -> dict:
             clk = next((q for q in idef["pins"] if q["kind"] == "clk"), None)
             cn = by_end.get((inst["name"], clk["name"])) if clk else None
             d = resolve_clock(cx, path, cn) if cn else None
+            if d is None:
+                d = clockmap_domain(cx, path, inst["name"], idef)
             regs.append((inst, idef, d))
             if d:
                 cx.netdom[path + "|" + cn] = [d]

@@ -279,9 +279,24 @@ def build(root: str, out_dir: str, top: str = "", bd: str = "", use_vivado: str 
             log("merged Vivado netlist %s (%d modules)" % (os.path.basename(dp), n))
     _graft(design, mods)
     _pick_top(design, roots, top or (xp.get("top") if xp else ""))
+    for cp in sorted(glob.glob(os.path.join(out_dir, "clocks_*.json"))):
+        from . import vivado as V
+        n = V.merge_clock_map(design, V.import_clock_map(cp))
+        M.add_source(design, "vivado-clocks", cp)
+        log("merged Vivado clock map %s (%d instance%s)" % (os.path.basename(cp), n, "" if n == 1 else "s"))
     for s in meta["sources"]:
         s["path"] = rel(s["path"])
     findings = []
+    miss = {}
+    for f, line, name in hdl.MISSING_INCLUDES:
+        miss.setdefault(name, []).append("%s:%d" % (rel(f), line))
+    for name, where in miss.items():
+        findings.append({"sev": "high", "path": "/", "rule": "include-missing",
+                         "title": "`include \"%s\" not found" % name,
+                         "detail": "Included by %s. Usually a generated file: the build directory is stale or "
+                                   "incomplete, so Vivado will fail to elaborate." % ", ".join(where[:4]),
+                         "fix": "Re-run the step that generates it, or add its directory to the include path.",
+                         "by": "lint"})
     findings += _io_check(design, (xp.get("xdc") if xp else []) or inv.get("xdc", []) +
                           [p for p in inv.get("xdc", []) if p.endswith("board.xdc")], rel)
     expect_bit = ""

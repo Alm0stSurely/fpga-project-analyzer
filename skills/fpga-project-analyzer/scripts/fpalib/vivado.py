@@ -239,3 +239,24 @@ def reports(target, root, run_name="impl_1", log=print):
     run(vivado, "reports.tcl", [os.path.abspath(target), out, run_name], os.path.join(root, ".fpa", "vivado"), log)
     facts = R.summarize(glob.glob(os.path.join(out, "*.rpt")))
     print(R.format_facts(facts, lambda p: os.path.relpath(p, root)))
+
+
+def import_clock_map(path: str) -> dict:
+    """clocks_<top>.json -> {"top", "regs": {cell path without bit index: (root net, driver pin)}}."""
+    with open(path, encoding="utf-8") as f:
+        cm = json.load(f)
+    regs = {}
+    for cell, root, drv in cm["regs"]:
+        regs.setdefault(_BIT.sub("", cell), (root, drv))
+    return {"top": cm["top"], "regs": regs}
+
+
+def merge_clock_map(design: dict, cm: dict) -> int:
+    """Attach a Vivado clock map to every instance of its top module."""
+    prefixes = [p for p, d, _ in M.walk(design) if M.body(design, d).get("name") == cm["top"]
+                and M.body(design, d)["kind"] == "rtl"]
+    if design["defs"][design["top"]]["name"] == cm["top"]:
+        prefixes.append("")
+    if prefixes:
+        design.setdefault("clockmaps", []).append({"top": cm["top"], "prefixes": prefixes, "regs": cm["regs"]})
+    return len(prefixes)

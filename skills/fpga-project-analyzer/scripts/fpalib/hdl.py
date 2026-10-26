@@ -103,6 +103,7 @@ class _T:
 
 
 _INCLUDE = re.compile(r'^\s*`include\s+"([^"]+)"')
+MISSING_INCLUDES = []  # (file, line, name) seen by the last parse
 
 
 def _v_clean(text, file="", incdirs=(), depth=0):
@@ -111,6 +112,8 @@ def _v_clean(text, file="", incdirs=(), depth=0):
         for k, line in enumerate(lines):
             m = _INCLUDE.match(line)
             inc = _find_include(m.group(1), file, incdirs) if m else None
+            if m and not inc:
+                MISSING_INCLUDES.append((file, k + 1, m.group(1)))
             if inc:
                 try:
                     with open(inc, encoding="utf-8", errors="replace") as f:
@@ -1358,6 +1361,7 @@ def _finish_kinds(design, rtl_ids):
 def parse_files(paths: list, incdirs=()) -> list:
     import os
     mods = []
+    del MISSING_INCLUDES[:]
     incdirs = list(dict.fromkeys(list(incdirs) + [os.path.dirname(p) for p in paths]))
     for p in paths:
         try:
