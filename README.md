@@ -1,4 +1,4 @@
-<p align="center"><img src="docs/top.png" alt="Vivado-style block design view with clock domains and findings" width="100%"></p>
+<p align="center"><img src="docs/fpga-analyzer-demo.gif" alt="Demo: block design coloured by clock domain, drill-down into RTL, ending on an unsynchronized clock-domain crossing finding" width="100%"></p>
 
 <h1 align="center">FPGA Project Analyzer</h1>
 
