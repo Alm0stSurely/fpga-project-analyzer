@@ -12,6 +12,7 @@ and finds the bugs that "timing met" hides.</p>
 <img alt="Python" src="https://img.shields.io/badge/python-3.8%2B-3776ab">
 <img alt="Offline" src="https://img.shields.io/badge/runs-100%25_offline-2e9d5b">
 <img alt="Vivado optional" src="https://img.shields.io/badge/Vivado-optional-6b7a8f">
+<img alt="MIT license" src="https://img.shields.io/badge/license-MIT-blue">
 </p>
 
 ---
@@ -103,6 +104,7 @@ $FPA show    /axi_dma_0 path/to/project # one block: pins, peers, domains, addre
 $FPA view    path/to/project            # → path/to/project/.fpa/design.html
 $FPA logs    path/to/runme.log          # grouped errors of a failed run
 $FPA deep    path/to/project --top my_module   # Vivado-elaborated netlist (needs Vivado)
+$FPA build   path/to/repo --src build/top.d --src build/bd.d   # Makefile/multi-board repos: use the build's own file lists
 ```
 
 ## Inputs
@@ -135,6 +137,16 @@ The clock-domain analysis follows every clock to its source (through hierarchy, 
 buffers), propagates each net's driving domains through logic and into submodules, and flags registers that
 sample another domain - unless it is a proper two-flop synchronizer.
 
+## Limitations
+
+- Without Vivado, RTL is read structurally (no full elaboration): generate loops are shown once and parameters are
+  evaluated when they are simple. Clock-domain checks need clocks they can trace; clocks that travel through
+  SystemVerilog interface internals are often not traceable statically, so "no findings" can mean "not checked".
+  `deep` (Vivado elaboration) closes the gap.
+- Block-design Tcl that relies on `apply_bd_automation` is only partly readable without Vivado.
+- Lint findings are candidates for the agent (or you) to confirm against the source; functional bugs such as
+  pipeline misalignment need a review, not a structural check.
+
 ## Privacy
 
 Everything runs on your machine. The diagram is a single file with no network requests (the ELK layout
@@ -151,4 +163,4 @@ independent and not affiliated with or endorsed by AMD.
 
 ## License
 
-Copyright © 2026 Abdullah AlNafisah. All rights reserved. See [LICENSE](LICENSE).
+[MIT](LICENSE) © 2026 Abdullah AlNafisah. The vendored ELK layout engine is EPL-2.0.

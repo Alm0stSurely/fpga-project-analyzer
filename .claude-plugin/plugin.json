@@ -2,8 +2,24 @@
   "name": "fpga-project-analyzer",
   "version": "0.1.0",
   "description": "Explain and review existing AMD/Xilinx FPGA projects (Vivado block designs, RTL, PYNQ, HLS, PetaLinux) with drill-down Vivado-style diagrams and clock-domain, constraint and overlay checks.",
-  "author": {"name": "Abdullah AlNafisah", "url": "https://github.com/al-nafisah"},
+  "author": {
+    "name": "Abdullah AlNafisah",
+    "url": "https://github.com/al-nafisah"
+  },
   "homepage": "https://github.com/al-nafisah/fpga-project-analyzer",
   "repository": "https://github.com/al-nafisah/fpga-project-analyzer",
-  "keywords": ["fpga", "vivado", "zynq", "pynq", "mpsoc", "rtl", "verilog", "vhdl", "cdc", "hls", "petalinux"]
+  "keywords": [
+    "fpga",
+    "vivado",
+    "zynq",
+    "pynq",
+    "mpsoc",
+    "rtl",
+    "verilog",
+    "vhdl",
+    "cdc",
+    "hls",
+    "petalinux"
+  ],
+  "license": "MIT"
 }
