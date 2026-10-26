@@ -19,9 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-Third-party component: skills/fpga-project-analyzer/assets/vendor/elk.bundled.js
-is elkjs (Eclipse Layout Kernel), distributed under the Eclipse Public License 2.0;
-see skills/fpga-project-analyzer/assets/vendor/ELK-LICENSE.md.

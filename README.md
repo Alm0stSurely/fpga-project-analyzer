@@ -163,4 +163,4 @@ independent and not affiliated with or endorsed by AMD.
 
 ## License
 
-[MIT](LICENSE) © 2026 Abdullah AlNafisah. The vendored ELK layout engine is EPL-2.0.
+[MIT](LICENSE) © 2026 Abdullah AlNafisah. The vendored ELK layout engine is EPL-2.0 ([THIRD_PARTY.md](THIRD_PARTY.md)).
