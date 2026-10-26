@@ -1,6 +1,6 @@
 {
-  "name": "fpga-project-analyzer",
-  "version": "0.1.0",
+  "name": "fpga",
+  "version": "0.2.0",
   "description": "Explain and review existing AMD/Xilinx FPGA projects (Vivado block designs, RTL, PYNQ, HLS, PetaLinux) with drill-down Vivado-style diagrams and clock-domain, constraint and overlay checks.",
   "author": {
     "name": "Abdullah AlNafisah",

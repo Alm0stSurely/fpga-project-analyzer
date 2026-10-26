@@ -39,27 +39,26 @@ M pynq-bitname  notebook loads design_1.bit, build makes design_1_wrapper.bit
 
 ## Install
 
-Claude Code:
+In Claude Code:
 
 ```
-/plugin marketplace add al-nafisah/fpga-project-analyzer
-/plugin install fpga-project-analyzer@fpga-project-analyzer
+/plugin install fpga --marketplace al-nafisah/fpga-project-analyzer
 ```
 
-Other agents: copy [`skills/fpga-project-analyzer`](skills/fpga-project-analyzer) into the agent's skills folder.
-Needs Python 3.8+ only; Vivado is optional.
+<sub>Older Claude Code: `/plugin marketplace add al-nafisah/fpga-project-analyzer`, then `/plugin install fpga@fpga-project-analyzer`.
+Other agents: copy [`skills/`](skills) into the agent's skills folder. Needs Python 3.8+; Vivado optional.</sub>
 
 ## Use
 
-Ask your agent: *"Explain this FPGA project"* or *"Why did my bitstream fail?"*. Or run it directly:
+Open your project folder in Claude Code and type:
 
-```bash
-python3 skills/fpga-project-analyzer/scripts/fpa.py build path/to/project   # analyze, print summary
-python3 skills/fpga-project-analyzer/scripts/fpa.py view  path/to/project   # → .fpa/design.html
-```
+| Command | What you get |
+|---|---|
+| `/fpga:explain` | How the design works, as a clickable diagram |
+| `/fpga:review` | Hardware bugs: clock crossings, pins, resets, address map, PYNQ |
+| `/fpga:debug build.log` | Why the build failed, and the exact fix |
 
-Reads `.xpr`, `.bd`/`.hwh`/`.xsa`/BD Tcl, Verilog/SV/VHDL, `.xdc`, reports, logs, notebooks, C and device
-trees. For Makefile or multi-board repos, pass the build's file lists: `--src build/top.d`.
+Each takes an optional folder or file. Or just ask in plain words, e.g. *"why did my bitstream fail?"*.
 
 ## Limitations
 
