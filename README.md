@@ -40,6 +40,12 @@ M pynq-bitname  notebook loads design_1.bit, build makes design_1_wrapper.bit
 
 ## Install
 
+Easiest: ask your AI agent to do it.
+
+> Install the FPGA Project Analyzer from https://github.com/al-nafisah/fpga-project-analyzer and set it up for yourself, following its README.
+
+Or do it yourself:
+
 1. Install the tool (Python 3.8+):
 
    ```
