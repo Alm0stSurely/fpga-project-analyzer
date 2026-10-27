@@ -40,41 +40,42 @@ M pynq-bitname  notebook loads design_1.bit, build makes design_1_wrapper.bit
 
 ## Install
 
-In Claude Code:
+1. Install the tool (Python 3.8+):
 
-```
-/plugin install fpga --marketplace al-nafisah/fpga-project-analyzer
-```
+   ```
+   pipx install git+https://github.com/al-nafisah/fpga-project-analyzer
+   ```
 
-<sub>Older Claude Code: `/plugin marketplace add al-nafisah/fpga-project-analyzer`, then `/plugin install fpga@fpga-project-analyzer`.</sub>
+2. Connect your agent:
 
-Any other agent (Cursor, VS Code Copilot, Gemini CLI, Codex CLI, Claude Desktop): install the CLI, then add it as an
-MCP server.
-
-```
-pipx install git+https://github.com/al-nafisah/fpga-project-analyzer
-```
+| Agent | Setup |
+|---|---|
+| Claude Code | `/plugin install fpga --marketplace al-nafisah/fpga-project-analyzer` (step 1 not needed) |
+| Claude Desktop | add the JSON below to its MCP config |
+| Cursor | add the JSON below to `~/.cursor/mcp.json` |
+| Gemini CLI | `gemini mcp add fpga fpa mcp` |
+| OpenAI Codex | `codex mcp add fpga -- fpa mcp` |
+| VS Code (Copilot) | add the JSON below to `.vscode/mcp.json`, with `"servers"` instead of `"mcpServers"` |
 
 ```json
 {"mcpServers": {"fpga": {"command": "fpa", "args": ["mcp"]}}}
 ```
 
-<sub>VS Code: same entry under `"servers"` in `.vscode/mcp.json`. Codex: `[mcp_servers.fpga]` with `command = "fpa"`,
-`args = ["mcp"]` in `~/.codex/config.toml`. Agents that read `SKILL.md`: copy [`skills/`](skills). Browser chats can't
-read your files; paste `fpa build` output instead. No AI at all: `fpa build <project>`, then `fpa view <project>`.
-Needs Python 3.8+; Vivado optional.</sub>
+<sub>Any other MCP-capable agent works the same way. Agents that load `SKILL.md` skills can use [`skills/`](skills) directly.
+Browser chats can't read your files; use the vendor's coding agent instead. Without AI: `fpa build <project>`, then
+`fpa view <project>`. Vivado is optional.</sub>
 
 ## Use
 
-Open your project folder in Claude Code and type:
+Open your project folder in your agent and ask:
 
-| Command | What you get |
+| Ask | You get |
 |---|---|
-| `/fpga:explain` | How the design works, as a clickable diagram |
-| `/fpga:review` | Hardware bugs: clock crossings, pins, resets, address map, PYNQ |
-| `/fpga:debug build.log` | Why the build failed, and the exact fix |
+| *"Explain this FPGA project"* | How the design works, as a clickable diagram |
+| *"Review it for hardware bugs"* | Clock crossings, pins, resets, address map, PYNQ issues |
+| *"Why did my build fail?"* | The root cause and the exact fix |
 
-Each takes an optional folder or file. Or just ask in plain words, e.g. *"why did my bitstream fail?"*.
+<sub>In Claude Code these are also commands: `/fpga:explain`, `/fpga:review`, `/fpga:debug`.</sub>
 
 ## Limitations
 
