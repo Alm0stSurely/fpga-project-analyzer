@@ -7,3 +7,5 @@ vivado*.log
 vivado*.str
 examples/*/vivado/
 .DS_Store
+build/
+*.egg-info/

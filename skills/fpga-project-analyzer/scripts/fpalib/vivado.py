@@ -10,7 +10,7 @@ import sys
 
 from . import model as M
 
-TCL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "vivado")
+TCL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vivado")
 _BIT = re.compile(r"\[\d+\]$")
 _REG = re.compile(r"^(RTL_REG\w*|FD[CPRS]E|RTL_LATCH\w*|LD\w*)$")
 _RST_PIN = {"CLR", "PRE", "RST", "R", "S", "SET", "CLEAR", "RESET"}

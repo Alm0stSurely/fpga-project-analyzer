@@ -46,8 +46,23 @@ In Claude Code:
 /plugin install fpga --marketplace al-nafisah/fpga-project-analyzer
 ```
 
-<sub>Older Claude Code: `/plugin marketplace add al-nafisah/fpga-project-analyzer`, then `/plugin install fpga@fpga-project-analyzer`.
-Other agents: copy [`skills/`](skills) into the agent's skills folder. Needs Python 3.8+; Vivado optional.</sub>
+<sub>Older Claude Code: `/plugin marketplace add al-nafisah/fpga-project-analyzer`, then `/plugin install fpga@fpga-project-analyzer`.</sub>
+
+Any other agent (Cursor, VS Code Copilot, Gemini CLI, Codex CLI, Claude Desktop): install the CLI, then add it as an
+MCP server.
+
+```
+pipx install git+https://github.com/al-nafisah/fpga-project-analyzer
+```
+
+```json
+{"mcpServers": {"fpga": {"command": "fpa", "args": ["mcp"]}}}
+```
+
+<sub>VS Code: same entry under `"servers"` in `.vscode/mcp.json`. Codex: `[mcp_servers.fpga]` with `command = "fpa"`,
+`args = ["mcp"]` in `~/.codex/config.toml`. Agents that read `SKILL.md`: copy [`skills/`](skills). Browser chats can't
+read your files; paste `fpa build` output instead. No AI at all: `fpa build <project>`, then `fpa view <project>`.
+Needs Python 3.8+; Vivado optional.</sub>
 
 ## Use
 

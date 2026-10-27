@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import os
 
-ASSETS = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "assets")
+ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 
 
 def load_overlay(path: str) -> dict:
