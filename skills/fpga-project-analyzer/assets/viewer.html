@@ -198,6 +198,7 @@ const TITLES = {processing_system7: "ZYNQ7 Processing System", zynq_ultra_ps_e: 
   util_reduced_logic: "Utility Reduced Logic", fifo_generator: "FIFO Generator", axi_bram: "AXI BRAM"};
 const KORD = {bus: 0, clk: 1, rst: 2, data: 3, intr: 4};
 const S = {path: [], dom: true, unc: false, tidy: null, sel: null, flow: "", cache: {}, t: {x: 0, y: 0, k: 1}};
+let clickTimer = null;
 const $ = id => document.getElementById(id);
 const svg = $("svg"), vp = $("vp");
 const NS = "http://www.w3.org/2000/svg";
@@ -501,8 +502,12 @@ function drawInst(gn, n, m, g) {
   if (m.note) { fy += 12; const nt = el("text", {x: W / 2, y: fy, "text-anchor": "middle", class: "note"}, grp); nt.textContent = m.note; }
   const fs = (m.fulls || [m.full]).flatMap(f => findingsUnder(f));
   if (fs.length) badge(grp, W - 1, by, fs);
-  grp.addEventListener("click", ev => { ev.stopPropagation(); select({type: "inst", ...m}); });
-  grp.addEventListener("dblclick", ev => { ev.stopPropagation(); if (drillable(cd)) go(S.path.concat(m.inst.name)); });
+  // a block that can be opened waits briefly on click, so a double-click opens it before the panel covers it
+  grp.addEventListener("click", ev => {
+    ev.stopPropagation(); if (ev.detail > 1) return;
+    clearTimeout(clickTimer); clickTimer = setTimeout(() => select({type: "inst", ...m}), drillable(cd) ? 230 : 0);
+  });
+  grp.addEventListener("dblclick", ev => { ev.stopPropagation(); clearTimeout(clickTimer); if (drillable(cd)) go(S.path.concat(m.inst.name)); });
   grp.addEventListener("mouseenter", () => hoverNode(n.id)); grp.addEventListener("mouseleave", unhover);
 }
 function netAt(g, inst, pin) { const n = g.body.nets.find(n => n.ends.some(e => e[0] === inst && e[1] === pin)); return n ? n.name : null; }
@@ -540,9 +545,9 @@ async function render(refit) {
   draw(G, LAID);
   $("b-tidy").classList.toggle("on", !G.tidy);
   legend();
+  panel();  // before fit, so a panel closed by navigation no longer reserves space
   if (refit) fit();
   requestAnimationFrame(() => vp.classList.remove("fade"));
-  panel();
 }
 function crumbs() {
   const c = $("crumbs"); c.innerHTML = "";
@@ -566,6 +571,13 @@ function select(s) {
   vp.querySelectorAll(".node.sel").forEach(x => x.classList.remove("sel"));
   if (s && s.type === "inst") { const n = vp.querySelector(`[data-id="${CSS.escape(s.id || "i:" + s.inst.name)}"]`); if (n) n.classList.add("sel"); }
   panel();
+  if (s && s.type === "inst") keepVisible(s.id || "i:" + s.inst.name);
+}
+function keepVisible(id) {  // slide the diagram so a selected block is not hidden under the panel
+  const n = vp.querySelector(`[data-id="${CSS.escape(id)}"]`), P = $("panel");
+  if (!n || P.hidden) return;
+  const r = n.getBoundingClientRect(), edge = P.getBoundingClientRect().left - 16;
+  if (r.right > edge) { S.t.x -= Math.min(r.right - edge, Math.max(0, r.left - 16)); apply(); }
 }
 function peers(body, inst, pin) {
   const n = body.nets.find(n => n.ends.some(e => e[0] === inst && e[1] === pin));
