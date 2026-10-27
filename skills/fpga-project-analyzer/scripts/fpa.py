@@ -6,6 +6,7 @@
   fpa.py show    [ROOT] BLOCK [--nets]      one block: pins, peers, nets, domains, address, regs, refs
   fpa.py findings [ROOT]                    all findings with detail and fix
   fpa.py view    [ROOT] [-o FILE]           offline HTML diagram (merges .fpa/overlay.json)
+  fpa.py doc     [ROOT] [--no-images]       Markdown design document + SVG diagrams in .fpa/
   fpa.py reports [ROOT|FILES...]            timing / utilization / DRC / methodology facts
   fpa.py logs    FILE [-n N]                grouped errors/warnings of a tool log
   fpa.py deep    [ROOT] --top M             Vivado-elaborated RTL netlist (needs Vivado)
@@ -86,6 +87,15 @@ def cmd_view(a):
         _disp(out), n, len(ov.get("notes", {})), len(ov.get("flows", [])), os.path.abspath(out)))
 
 
+def cmd_doc(a):
+    from fpalib import doc
+    root = _root(a.root)
+    d = _load(root)
+    ov = V.load_overlay(os.path.join(root, ".fpa", "overlay.json"))
+    out, n = doc.write(d, root, ov, images=not a.no_images, levels=a.levels, log=lambda m: print(m, file=sys.stderr))
+    print("%s  (%d diagram%s)" % (_disp(out), n, "" if n == 1 else "s"))
+
+
 def cmd_reports(a):
     paths = []
     for p in a.paths or ["."]:
@@ -127,6 +137,9 @@ def main(argv=None):
     p = sub.add_parser("findings"); p.add_argument("root", nargs="?"); p.set_defaults(f=cmd_findings)
     p = sub.add_parser("view"); p.add_argument("root", nargs="?"); p.add_argument("-o"); p.add_argument("--overlay")
     p.set_defaults(f=cmd_view)
+    p = sub.add_parser("doc"); p.add_argument("root", nargs="?"); p.add_argument("--no-images", action="store_true")
+    p.add_argument("--levels", type=int, default=6, help="diagram levels to include (default 6)")
+    p.set_defaults(f=cmd_doc)
     p = sub.add_parser("reports"); p.add_argument("paths", nargs="*"); p.set_defaults(f=cmd_reports)
     p = sub.add_parser("logs"); p.add_argument("file"); p.add_argument("-n", type=int, default=25); p.set_defaults(f=cmd_logs)
     p = sub.add_parser("deep"); p.add_argument("root", nargs="?"); p.add_argument("--top", required=True)

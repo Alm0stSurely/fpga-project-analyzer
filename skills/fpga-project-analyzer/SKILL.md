@@ -25,7 +25,8 @@ Scripts read the project; you read their compact output. Do not open .bd/.hwh/.x
 4. Write `<project>/.fpa/overlay.json` (schema below): a role note for each key block, 1-2 flows, and review findings.
 5. `FPA view <project>` -> `.fpa/design.html` (offline, single file); it warns about overlay paths or nets that do
    not resolve. Deep links: `design.html#/hier/block`, `?issues=1` (issue list), `?sel=/hier/block` (block panel),
-   `?theme=dark`.
+   `?theme=dark`. The viewer's Export menu saves the current level as SVG/PNG.
+6. For documentation requests: `FPA doc <project>` -> `.fpa/design.md` with SVG diagrams and tables.
 
 ## How to answer
 - Visual first: give the file:// link and deep links, then at most 6 short bullets. No pasted reports or long prose.

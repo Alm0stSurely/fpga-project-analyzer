@@ -49,6 +49,7 @@ button,.btn{font:inherit;color:var(--ink);background:transparent;border:1px soli
   height:30px;min-width:30px;padding:0 7px;cursor:pointer;display:inline-flex;align-items:center;gap:5px}
 button:hover{background:var(--chip)}button.on{background:var(--chip);border-color:var(--line)}
 button svg{width:16px;height:16px}
+#export,#flows{font:inherit;color:var(--ink);background:var(--chip);border:1px solid var(--line);border-radius:6px;height:30px}
 #q{font:inherit;color:var(--ink);background:var(--chip);border:1px solid var(--line);border-radius:6px;height:30px;
   width:200px;padding:0 8px}
 #issues-btn .n{background:var(--danger);color:#fff;border-radius:9px;padding:0 6px;font-size:11px;font-weight:600}
@@ -148,6 +149,7 @@ a{color:var(--bus)}
     <input id="q" list="paths" placeholder="Find block…" aria-label="Find block" autocomplete="off">
     <datalist id="paths"></datalist>
     <select id="flows" hidden aria-label="Flow"></select>
+    <select id="export" aria-label="Export" title="Export this level"><option value="">Export…</option><option value="svg">SVG</option><option value="png">PNG</option></select>
     <button id="issues-btn" title="Issues (I)">⚠ <span class="n">0</span></button>
     <button id="b-dom" title="Colour by clock domain (D)" aria-pressed="true"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 2a6 6 0 0 1 0 12z" fill="currentColor"/></svg></button>
     <button id="b-tidy" title="Clock/reset wires (W)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1 8h3l2-4 2 8 2-4h5"/></svg></button>
@@ -197,6 +199,7 @@ const TITLES = {processing_system7: "ZYNQ7 Processing System", zynq_ultra_ps_e: 
   axis_broadcaster: "AXI4-Stream Broadcaster", axis_switch: "AXI4-Stream Switch", axi_noc: "AXI NoC",
   util_reduced_logic: "Utility Reduced Logic", fifo_generator: "FIFO Generator", axi_bram: "AXI BRAM"};
 const KORD = {bus: 0, clk: 1, rst: 2, data: 3, intr: 4};
+const q = new URLSearchParams(location.search);
 const S = {path: [], dom: true, unc: false, tidy: null, sel: null, flow: "", cache: {}, t: {x: 0, y: 0, k: 1}};
 let clickTimer = null;
 const $ = id => document.getElementById(id);
@@ -537,6 +540,7 @@ function go(parts, keepSel) {
   render(true);
 }
 async function render(refit) {
+  window.__fpa_ready = false;
   G = build(S.path);
   crumbs();
   $("empty").hidden = G.nodes.length > 0;
@@ -548,6 +552,11 @@ async function render(refit) {
   panel();  // before fit, so a panel closed by navigation no longer reserves space
   if (refit) fit();
   requestAnimationFrame(() => vp.classList.remove("fade"));
+  if (q.get("export") === "svg") {  // headless export for `fpa doc`: the SVG lands in a textarea
+    let t = $("fpa-export"); if (!t) { t = document.createElement("textarea"); t.id = "fpa-export"; t.hidden = true; document.body.appendChild(t); }
+    t.textContent = exportSVG();
+  }
+  window.__fpa_ready = true;
 }
 function crumbs() {
   const c = $("crumbs"); c.innerHTML = "";
@@ -674,6 +683,48 @@ function reveal(p) {
   setTimeout(() => { const nm = target[target.length - 1]; const m = metaFor(nm); if (m) select(pick(m, nm)); }, 60);
 }
 
+/* ---------- export ---------- */
+const XPROPS = ["fill", "fill-opacity", "stroke", "stroke-width", "stroke-dasharray", "stroke-opacity", "stroke-linejoin",
+  "stroke-linecap", "opacity", "font-family", "font-size", "font-weight", "font-style", "stop-color", "stop-opacity",
+  "letter-spacing", "text-anchor"];
+function exportSVG() {  // the whole current level at 1:1, styles inlined so it renders anywhere
+  unhover();
+  const w = Math.ceil(LAID.width), h = Math.ceil(LAID.height), clone = svg.cloneNode(true);
+  const keep = el => !el.closest(".hits");
+  const src = [...svg.querySelectorAll("*")].filter(keep), dst = [...clone.querySelectorAll("*")].filter(keep);
+  src.forEach((el, i) => {
+    const cs = getComputedStyle(el);
+    dst[i].setAttribute("style", XPROPS.map(p => p + ":" + cs.getPropertyValue(p)).join(";"));
+    dst[i].removeAttribute("class");
+  });
+  clone.querySelectorAll(".hits").forEach(x => x.remove());
+  const v = clone.querySelector("#vp"); v.removeAttribute("transform"); v.removeAttribute("class");
+  for (const a of ["id", "class", "role", "aria-label", "style"]) clone.removeAttribute(a);
+  Object.entries({xmlns: NS, width: w, height: h, viewBox: `0 0 ${w} ${h}`}).forEach(([k, x]) => clone.setAttribute(k, x));
+  const bg = document.createElementNS(NS, "rect");
+  Object.entries({width: w, height: h, fill: getComputedStyle(document.body).backgroundColor}).forEach(([k, x]) => bg.setAttribute(k, x));
+  clone.insertBefore(bg, clone.firstChild);
+  return new XMLSerializer().serializeToString(clone);
+}
+function exportName() { return (defs[D.top].name + (S.path.length ? "-" + S.path.join("-") : "")).replace(/[^\w.-]+/g, "_"); }
+function download(blob, name) {
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+function doExport(kind) {
+  const text = exportSVG();
+  if (kind === "svg") return download(new Blob([text], {type: "image/svg+xml"}), exportName() + ".svg");
+  const img = new Image(), url = URL.createObjectURL(new Blob([text], {type: "image/svg+xml"}));
+  img.onload = () => {
+    const c = document.createElement("canvas"), k = 2;
+    c.width = img.width * k; c.height = img.height * k;
+    const g = c.getContext("2d"); g.scale(k, k); g.drawImage(img, 0, 0);
+    c.toBlob(b => download(b, exportName() + ".png")); URL.revokeObjectURL(url);
+  };
+  img.src = url;
+}
+$("export").onchange = ev => { const k = ev.target.value; ev.target.value = ""; if (k) doExport(k); };
+
 /* ---------- pan & zoom ---------- */
 function apply() { vp.setAttribute("transform", `translate(${S.t.x},${S.t.y}) scale(${S.t.k})`); }
 function fit() {
@@ -730,7 +781,6 @@ const m = D.meta || {};
 $("meta").textContent = [m.part, m.tool ? "Vivado " + m.tool : ""].filter(Boolean).join(" · ");
 window.__fpa = {go, select, state: S};
 const start = decodeURIComponent(location.hash.slice(1)).split("/").filter(Boolean);
-const q = new URLSearchParams(location.search);
 if (q.get("theme") === "dark" || q.get("theme") === "light") document.documentElement.setAttribute("data-theme", q.get("theme"));
 go(start);
 if (q.get("issues")) setTimeout(() => select({type: "issues"}), 300);

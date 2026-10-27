@@ -25,6 +25,7 @@ Drill-down Vivado-style diagrams, plus the bugs that "timing met" hides. A CLI a
   address map, interrupts, PYNQ `.bit`/`.hwh` mistakes.
 - **Logs:** failed Vivado/PetaLinux builds condensed to the lines that matter.
 - **Software links:** PYNQ notebooks, bare-metal C and device trees mapped to the blocks they drive.
+- **Docs:** export any level as SVG/PNG, or generate a Markdown design document with diagrams (`fpa doc`).
 
 ## Demo
 
