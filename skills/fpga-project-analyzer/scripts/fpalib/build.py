@@ -428,6 +428,43 @@ def _io_check(design, xdc_files, rel):
         out.append({"sev": "low", "path": "/", "rule": "xdc-unknown-port",
                     "title": "XDC targets missing port %s" % t, "detail": "Vivado drops it ([Vivado 12-584]).",
                     "by": "lint"})
+    out += _clock_check(design, top, x)
+    return out
+
+
+def _clock_check(design, top, x):
+    """Input clock ports need create_clock; skip ports that feed AMD IP (it constrains its own inputs)."""
+    defs = design["defs"]
+    body = M.body(design, top)
+    idef = {i["name"]: defs[i["def"]] for i in body["insts"]}
+
+    def feeds_ip(port):
+        for n in body["nets"]:
+            if ["", port] in n["ends"]:
+                return any(i and (idef.get(i, {}).get("vlnv") or "").startswith("xilinx.com:ip:") for i, _ in n["ends"])
+        return False
+
+    clocked = set()
+    for _, _, pats in x["clocks"]:
+        clocked.update(pats)
+    out = []
+    for p in top["pins"]:
+        if p["dir"] not in ("in", "inout"):
+            continue
+        if p["kind"] == "clk":
+            names = [p["name"]]
+        elif p["kind"] == "bus" and "clock" in (p.get("bus") or ""):
+            names = [n for n, _, _ in p.get("phys", []) if not n.endswith("_n")]  # diff pair: the P side
+        else:
+            continue
+        if not names or feeds_ip(p["name"]):
+            continue
+        if any(xdc._match(pat, n) for n in names for pat in clocked):
+            continue
+        out.append({"sev": "med", "path": "/", "port": p["name"], "rule": "clock-unconstrained",
+                    "title": "Input clock %s has no create_clock" % names[0],
+                    "detail": "Paths it clocks are not timed (check_timing no_clock), so 'timing met' does not cover them.",
+                    "fix": "create_clock -period <ns> -name %s [get_ports %s]" % (p["name"], names[0]), "by": "lint"})
     return out
 
 
