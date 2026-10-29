@@ -13,6 +13,8 @@ Ask your agent; get a clickable Vivado-style diagram, plus the bugs that "timing
 
 <p align="center"><img src="docs/how-it-works.svg" alt="How it works: your FPGA project files (Vivado .xpr/.bd/.tcl, Verilog/SystemVerilog/VHDL, .xdc/.hwh/.xsa/.bit, PYNQ notebooks, C drivers and device trees, failed build logs) go to your AI agent (Claude Code, Cursor, Codex, Gemini CLI, Copilot or any MCP/skills agent) with the fpa skill. You get a clickable diagram from block design down to registers, real bugs with file:line, why the build failed and the exact fix, and design docs. Runs offline; Vivado optional." width="100%"></p>
 
+<p align="center"><a href="https://al-nafisah.github.io/fpga-project-analyzer/demo/neorv32/"><b>▶ Try it live</b></a>: the analyzer's diagram of a RISC-V SoC, with the same RTL running in your browser</p>
+
 ## Install
 
 Easiest: ask your AI agent to do it.
@@ -95,10 +97,19 @@ untraced, so "no findings" can mean "not checked". VHDL `generate` conditions ar
 branches still appear in the diagram. `fpa.py deep` uses Vivado elaboration for exact results.
 Findings are candidates to confirm against the source.
 
-## Credits
+## Contributing
 
-Created by **Abdullah AlNafisah**, built with [Claude Code](https://claude.com/claude-code). Layout by
-[ELK](https://eclipse.dev/elk/); sketch font Architects Daughter (OFL) ([THIRD_PARTY.md](THIRD_PARTY.md)). AMD,
-Vivado, Zynq and PYNQ are trademarks of AMD; this project is not affiliated with AMD.
+The analyzer improves with every real project it sees. Most helpful:
 
-[MIT](LICENSE) © 2026 Abdullah AlNafisah
+- **Wrong or missed finding?** [Open an issue](https://github.com/al-nafisah/fpga-project-analyzer/issues/new/choose) with a small repro or an anonymized build log.
+- **A check you wish existed?** Propose it, or pick one labelled [`new-check`](https://github.com/al-nafisah/fpga-project-analyzer/labels/new-check).
+- **Not on AMD?** Help add Quartus, Lattice or Yosys/nextpnr support ([`toolchain`](https://github.com/al-nafisah/fpga-project-analyzer/labels/toolchain)).
+- **New here?** Start with a [`good first issue`](https://github.com/al-nafisah/fpga-project-analyzer/labels/good%20first%20issue).
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). If it saved you a debug session, a ⭐ helps other FPGA engineers find it.
+
+---
+
+<sub>Created by Abdullah AlNafisah with [Claude Code](https://claude.com/claude-code). Diagram layout by
+[ELK](https://eclipse.dev/elk/); sketch font Architects Daughter (OFL); see [THIRD_PARTY.md](THIRD_PARTY.md). AMD, Vivado,
+Zynq and PYNQ are trademarks of AMD; this project is not affiliated with AMD. [MIT](LICENSE) © 2026 Abdullah AlNafisah</sub>

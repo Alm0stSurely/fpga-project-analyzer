@@ -1,0 +1,15 @@
+name: Check request
+description: A hardware bug class the analyzer should catch.
+labels: [new-check]
+body:
+  - type: textarea
+    id: bug
+    attributes:
+      label: The bug
+      description: What goes wrong on hardware, and why timing or DRC don't catch it.
+    validations: {required: true}
+  - type: textarea
+    id: detect
+    attributes:
+      label: How to detect it
+      description: Which files or structures reveal it (RTL pattern, XDC, block design, report). A minimal example helps most.

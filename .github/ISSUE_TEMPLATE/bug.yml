@@ -1,0 +1,26 @@
+name: Wrong finding, missed bug, or crash
+description: The analyzer reported something false, missed a real bug, drew the design wrong, or failed.
+labels: [bug]
+body:
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What happened
+      options: [False finding, Missed bug, Wrong diagram, Crash or error]
+    validations: {required: true}
+  - type: textarea
+    id: detail
+    attributes:
+      label: Details
+      description: The finding line (or the bug it missed), what you expected, and how you know.
+    validations: {required: true}
+  - type: textarea
+    id: repro
+    attributes:
+      label: Repro
+      description: Smallest project, file excerpt or build log that shows it (anonymize freely). Not the .fpa/ folder.
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      placeholder: "fpa 0.2.0 · Vivado 2022.2 or none · Claude Code / Cursor / CLI · OS"

@@ -1,0 +1,15 @@
+name: Support a toolchain or file type
+description: Quartus, Lattice, Yosys/nextpnr, Vitis HLS, a report format, ...
+labels: [toolchain]
+body:
+  - type: input
+    id: tool
+    attributes:
+      label: Toolchain / file type
+      placeholder: "e.g. Quartus Prime 23.1 .qsf/.qsys"
+    validations: {required: true}
+  - type: textarea
+    id: why
+    attributes:
+      label: What you'd want from it
+      description: Diagram, checks, or log triage, and a public sample project if you know one.
