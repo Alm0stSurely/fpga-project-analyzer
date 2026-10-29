@@ -1,14 +1,16 @@
-"""Lightweight Verilog/SystemVerilog/VHDL structure reader (no elaboration).
+"""Lightweight Verilog/SystemVerilog/VHDL structure reader (light elaboration).
 
 Extracts modules/entities, ports, parameters, instances with connections and,
 for the lowest drill-down level, one node per always/process block (register
-or combinational) plus continuous assignments. Good enough for hierarchy,
+or combinational) plus continuous assignments. VHDL generics, package constants
+and if/case-generate conditions are evaluated per instance (see build_defs). Good enough for hierarchy,
 connectivity and clock-domain views; exact netlists come from Vivado.
 """
 from __future__ import annotations
 
 import bisect
 import re
+from collections import ChainMap
 
 from . import model as M
 
@@ -254,9 +256,13 @@ class _VModule:
         self.insts, self.procs, self.assigns = [], [], []
         self.signals = {}
         self.lang = "verilog"
+        # VHDL elaboration inputs: generic defaults and architecture constants as (name, value tokens),
+        # generate frames (see _h_stmts), used packages
+        self.generics, self.consts, self.gens, self.uses = [], [], [], []
 
 
 INTERFACES = set()
+PACKAGES = {}  # VHDL package name -> {"uses": [...], "consts": [(name, value tokens or None)]}
 
 
 def parse_verilog(text: str, file: str, incdirs=()) -> list:
@@ -772,21 +778,84 @@ def _h_iface(toks, env, out_params=None):
     return res
 
 
+_H_OFF = re.compile(r"--\s*(?:pragma|synthesis|synopsys)\s+translate_(off|on)\b|--\s*rtl_synthesis\s+(off|on)\b", re.I)
+
+
+def _h_off_lines(text):
+    """Line numbers inside `-- pragma translate_off` / `-- RTL_SYNTHESIS OFF` regions (simulation-only code)."""
+    off, start = set(), None
+    for m in _H_OFF.finditer(text):
+        line = text.count("\n", 0, m.start()) + 1
+        if (m.group(1) or m.group(2)).lower() == "off":
+            start = line if start is None else start
+        elif start is not None:
+            off.update(range(start, line + 1))
+            start = None
+    return off
+
+
+def _h_named_vals(item):
+    """`a, b : type := value` -> [(name, value tokens)] (empty tokens: no value)."""
+    colon = next((k for k, t in enumerate(item) if t.v == ":"), None)
+    if colon is None:
+        return []
+    rest = item[colon + 1:]
+    d = next((k for k, t in enumerate(rest) if t.v == ":="), None)
+    val = rest[d + 1:] if d is not None else []
+    return [(t.v, val) for t in item[:colon] if t.k in ("id", "esc") and t.v not in ("signal", "constant")]
+
+
+def _h_const_decl(toks, i, off):
+    """constant declaration at toks[i] -> (next index, [(name, value tokens or None if simulation-only)])."""
+    j = _h_skip_decl(toks, i)
+    sim = bool(off) and any(t.line in off for t in toks[i:j])
+    return j, [(nm, None if sim else val) for nm, val in _h_named_vals(toks[i + 1:j - 1])]
+
+
 def parse_vhdl(text: str, file: str) -> list:
     toks = _h_tokens(text)
-    ents, archs = {}, []
+    off = _h_off_lines(text) if "--" in text else set()
+    ents, archs, uses = {}, [], []
     i, n = 0, len(toks)
     while i < n:
         v = toks[i].v
-        if v == "entity" and i + 2 < n and toks[i + 2].v == "is" and (i == 0 or toks[i - 1].v != ":"):
+        if v == "use" and (i == 0 or toks[i - 1].v == ";"):
+            j = i + 1
+            while j < n and toks[j].v != ";":
+                j += 1
+            for item in _split_top(toks[i + 1:j]):
+                parts = [t.v for t in item if t.v != "."]
+                if len(parts) >= 3:
+                    uses.append(parts[1])
+            i = j + 1
+        elif v == "package" and i + 2 < n and (i == 0 or toks[i - 1].v == ";"):
+            body = toks[i + 1].v == "body"
+            k = i + (3 if body else 2)
+            if k < n and toks[k].v == "is" and not (k + 1 < n and toks[k + 1].v == "new"):
+                pk = PACKAGES.setdefault(toks[k - 1].v, {"uses": [], "consts": []})
+                pk["uses"] = _uniq(pk["uses"] + uses)
+                j = k + 1
+                while j < n and toks[j].v != "end":
+                    if toks[j].v == "constant":
+                        j, got = _h_const_decl(toks, j, off)
+                        pk["consts"].extend(got)
+                    else:
+                        j = _h_skip_decl(toks, j)
+                i = j
+            else:
+                i += 1
+        elif v == "entity" and i + 2 < n and toks[i + 2].v == "is" and (i == 0 or toks[i - 1].v != ":"):
             m = _VModule(toks[i + 1].v, file, toks[i + 1].line)
             m.lang = "vhdl"
+            m.uses = list(uses)
             j = i + 3
             while j < n and toks[j].v != "end":
                 if toks[j].v == "generic" and j + 1 < n and toks[j + 1].v == "(":
                     k = _close(toks, j + 1)
                     for nm, _, _, _, d in _h_iface(toks[j + 2:k], {}):
                         m.params[nm] = d
+                    for item in _split_top(toks[j + 2:k], ";"):
+                        m.generics.extend(_h_named_vals(item))
                     j = k + 1
                 elif toks[j].v == "port" and j + 1 < n and toks[j + 1].v == "(":
                     k = _close(toks, j + 1)
@@ -804,17 +873,18 @@ def parse_vhdl(text: str, file: str) -> list:
             arch_name, ent = toks[i + 1].v, toks[i + 3].v
             j = i + 4
             # find matching "end [architecture] [name];" at depth 0 of nested blocks
-            archs.append((ent, j))
+            archs.append((ent, j, list(uses)))
             i = j
         else:
             i += 1
-    for ent, j in archs:
+    for ent, j, au in archs:
         m = ents.get(ent)
         if m is None:
             m = _VModule(ent, file, toks[j].line)
             m.lang = "vhdl"
             ents[ent] = m
-        _h_arch(m, toks, j)
+        m.uses = _uniq(m.uses + au)
+        _h_arch(m, toks, j, off)
     return list(ents.values())
 
 
@@ -869,7 +939,7 @@ def _h_skip_decl(toks, i):
     return j + 1
 
 
-def _h_arch(m, toks, i):
+def _h_arch(m, toks, i, off=()):
     n = len(toks)
     env = _int_env(m.params)
     # declarative part
@@ -883,7 +953,8 @@ def _h_arch(m, toks, i):
                 m.signals[nm] = w
             i = j
         elif toks[i].v in ("constant",):
-            j = _h_skip_decl(toks, i)
+            j, got = _h_const_decl(toks, i, off)
+            m.consts.extend(got)
             for nm, _, _, _, d in _h_iface(toks[i + 1:j - 1], env):
                 m.params.setdefault(nm, d)
             env = _int_env(m.params)
@@ -894,31 +965,89 @@ def _h_arch(m, toks, i):
     _h_stmts(m, toks, i, env)
 
 
+def _h_upto(toks, i, word):
+    """Index of the first `word` at parenthesis depth 0 from toks[i] (len(toks) if none)."""
+    d = 0
+    for j in range(i, len(toks)):
+        v = toks[j].v
+        if v == "(":
+            d += 1
+        elif v == ")":
+            d -= 1
+        elif v == word and d == 0:
+            return j
+    return len(toks)
+
+
 def _h_stmts(m, toks, i, env):
+    """Concurrent statements. Generate statements open frames in m.gens:
+    {"label", "kind": if|for|case, "parent": (frame, branch) | None, "alts": [...], "var", "range", "expr"};
+    every process/instance/assignment gets "gen": (frame, branch) of its innermost frame."""
     n = len(toks)
+    stack = []
+    seen = [0, 0, 0]
+
+    def tag():  # items added since the last call belong to the current branch
+        if stack:
+            key = (stack[-1], len(m.gens[stack[-1]]["alts"]) - 1)
+            for k, lst in enumerate((m.procs, m.insts, m.assigns)):
+                for x in lst[seen[k]:]:
+                    x["gen"] = key
+        seen[:] = [len(m.procs), len(m.insts), len(m.assigns)]
+
+    def alt_label(j):  # VHDL-2008 alternative label: elsif alt: cond generate / when alt: choice =>
+        return j + 2 if j + 1 < n and toks[j].k in ("id", "esc") and toks[j + 1].v == ":" else j
+
     while i < n:
         v = toks[i].v
         if v == "end":
             nxt = toks[i + 1].v if i + 1 < n else ""
-            if nxt in ("generate", "block"):
-                i += 2
+            if nxt in ("generate", "block") or (stack and nxt != "architecture"):  # `end [alt];` (VHDL-2008)
+                if nxt == "generate" and stack:
+                    tag()
+                    stack.pop()
+                i += 1
                 while i < n and toks[i].v != ";":
                     i += 1
                 i += 1
                 continue
+            tag()
             return
+        top = m.gens[stack[-1]] if stack else None
+        if top and ((top["kind"] == "if" and v in ("elsif", "else")) or (top["kind"] == "case" and v == "when")):
+            tag()
+            j = alt_label(i + 1)
+            if v == "when":
+                k = _h_upto(toks, j, "=>")
+                top["alts"].append(_split_top(toks[j:k], "|"))
+            else:
+                k = _h_upto(toks, j, "generate")
+                top["alts"].append(toks[j:k] if v == "elsif" else None)
+            i = k + 1
+            continue
         label = None
         if toks[i].k in ("id", "esc") and i + 1 < n and toks[i + 1].v == ":":
             label = toks[i].v
             i += 2
             v = toks[i].v if i < n else ""
+        if v in ("for", "if", "case") and label:
+            g = _h_upto(toks, i, "generate")
+            tag()
+            f = {"label": label, "kind": v, "parent": (stack[-1], len(m.gens[stack[-1]]["alts"]) - 1) if stack else None,
+                 "alts": []}
+            if v == "if":
+                f["alts"].append(toks[i + 1:g])
+            elif v == "for":
+                f["var"], f["range"] = toks[i + 1].v, toks[i + 3:g]
+                f["alts"].append(True)
+            else:
+                f["expr"] = toks[i + 1:g]
+            m.gens.append(f)
+            stack.append(len(m.gens) - 1)
+            i = g + 1
+            continue
         if v == "process" or (v == "postponed" and i + 1 < n and toks[i + 1].v == "process"):
             i = _h_process(m, toks, i, label)
-            continue
-        if v in ("for", "if") and label:
-            while i < n and toks[i].v != "generate":
-                i += 1
-            i += 1
             continue
         if v == "block":
             while i < n and toks[i].v != "begin":
@@ -954,6 +1083,7 @@ def _h_stmts(m, toks, i, env):
             m.assigns.append({"w": _uniq(_hids(seg[:le], True)), "r": _uniq(_hids(seg[le + 1:])),
                               "line": toks[i].line})
         i = j + 1
+    tag()
 
 
 def _hids(toks, skip_index=False):
@@ -1056,7 +1186,7 @@ def _h_instance(m, toks, i, label):
     else:
         typ = v
         j += 1
-    params, conns, pos = {}, {}, []
+    params, conns, pos, ptoks = {}, {}, [], {}
     seen_map = False
     while j < n and toks[j].v != ";":
         if toks[j].v in ("generic", "port") and j + 2 < n and toks[j + 1].v == "map":
@@ -1067,8 +1197,10 @@ def _h_instance(m, toks, i, label):
                 if which == "generic":
                     if arrow is not None:
                         params[item[0].v] = _text(item[arrow + 1:])
+                        ptoks[item[0].v] = item[arrow + 1:]
                     else:
                         params["#%d" % p] = _text(item)
+                        ptoks["#%d" % p] = item
                 else:
                     if arrow is not None:
                         formal = item[0].v
@@ -1085,8 +1217,345 @@ def _h_instance(m, toks, i, label):
             j += 1
     if not seen_map:
         return None
-    m.insts.append({"name": label, "type": typ, "params": params, "conns": conns, "pos": pos, "line": toks[i].line})
+    m.insts.append({"name": label, "type": typ, "params": params, "conns": conns, "pos": pos, "line": toks[i].line,
+                    "ptoks": ptoks})
     return j + 1
+
+
+# ----------------------------------------------------------------------------
+# VHDL static evaluation: generics, constants and generate conditions
+
+class _HBad(Exception):
+    pass
+
+
+def _isint(x):
+    return isinstance(x, int) and not isinstance(x, bool)
+
+
+def _h_logic(op, a, b):
+    a = a if isinstance(a, bool) else None
+    b = b if isinstance(b, bool) else None
+    if op in ("and", "nand"):
+        r = False if (a is False or b is False) else (True if a and b else None)
+    elif op in ("or", "nor"):
+        r = True if (a or b) else (False if a is False and b is False else None)
+    else:
+        r = None if a is None or b is None else a != b
+    return (not r) if r is not None and op in ("nand", "nor", "xnor") else r
+
+
+def _h_call(name, a):
+    """The few pure helpers configuration code uses; anything else is unknown."""
+    if name == "boolean" and len(a) == 1:
+        return a[0] if isinstance(a[0], bool) else None
+    if name in ("integer", "natural", "positive") and len(a) == 1:
+        return a[0] if _isint(a[0]) else None
+    if name in ("index_size_f", "clog2", "clog2_f", "ceil_log2", "log2ceil") and len(a) == 1:
+        return next((k for k in range(32) if 2 ** k >= a[0]), 32) if _isint(a[0]) else None
+    if re.match(r"(cond_)?sel_\w+_f$", name) and len(a) == 3:  # NEORV32 sel_natural_f(c, t, f) and kin
+        return a[1] if a[0] is True else a[2] if a[0] is False else None
+    if name in ("minimum", "maximum") and len(a) == 2 and _isint(a[0]) and _isint(a[1]):
+        return min(a) if name == "minimum" else max(a)
+    return None
+
+
+class _HEval:
+    """Recursive descent over a VHDL static expression with int/bool values; None = unknown.
+    Unknowns propagate, except that `false and ?` is false and `true or ?` is true."""
+
+    def __init__(self, toks, env):
+        self.t, self.i, self.env = toks, 0, env
+
+    def peek(self):
+        return self.t[self.i].v if self.i < len(self.t) else ""
+
+    def take(self):
+        if self.i >= len(self.t):
+            raise _HBad()
+        self.i += 1
+        return self.t[self.i - 1]
+
+    def expr(self):
+        v = self.rel()
+        while self.peek() in ("and", "or", "xor", "nand", "nor", "xnor"):
+            op = self.take().v
+            v = _h_logic(op, v, self.rel())
+        return v
+
+    def rel(self):
+        a = self.simple()
+        op = self.peek()
+        if op in ("sll", "srl", "sla", "sra", "rol", "ror"):
+            self.take()
+            self.simple()
+            return None
+        if op not in ("=", "/=", "<", "<=", ">", ">="):
+            return a
+        self.take()
+        b = self.simple()
+        if a is None or b is None or isinstance(a, bool) != isinstance(b, bool):
+            return None
+        return {"=": a == b, "/=": a != b, "<": a < b, "<=": a <= b, ">": a > b, ">=": a >= b}[op]
+
+    def simple(self):
+        neg = self.peek() == "-"
+        if self.peek() in ("+", "-"):
+            self.take()
+        v = self.term()
+        if neg:
+            v = -v if _isint(v) else None
+        while self.peek() in ("+", "-", "&"):
+            op = self.take().v
+            w = self.term()
+            v = (v + w if op == "+" else v - w) if op != "&" and _isint(v) and _isint(w) else None
+        return v
+
+    def term(self):
+        v = self.factor()
+        while self.peek() in ("*", "/", "mod", "rem"):
+            op = self.take().v
+            w = self.factor()
+            if not (_isint(v) and _isint(w)) or (op != "*" and w == 0):
+                v = None
+            elif op == "*":
+                v = v * w
+            elif op == "/":  # truncates toward zero
+                v = abs(v) // abs(w) * (1 if (v < 0) == (w < 0) else -1)
+            elif op == "rem":
+                v = abs(v) % abs(w) * (1 if v >= 0 else -1)
+            else:  # mod: sign of the right operand, as in Python
+                v = v % w
+        return v
+
+    def factor(self):
+        k = self.peek()
+        if k in ("not", "abs"):
+            self.take()
+            v = self.primary()
+            if k == "not":
+                return (not v) if isinstance(v, bool) else None
+            return abs(v) if _isint(v) else None
+        v = self.primary()
+        if self.peek() == "**":
+            self.take()
+            w = self.primary()
+            return v ** w if _isint(v) and _isint(w) and 0 <= w <= 256 else None
+        return v
+
+    def args(self):
+        """( a, b, n => c ) at self.i -> argument values in order, or None for an aggregate."""
+        j = _close(self.t, self.i)
+        if self.t[j].v != ")":
+            raise _HBad()
+        inner = self.t[self.i + 1:j]
+        self.i = j + 1
+        out = []
+        for a in _split_top(inner):
+            arrow = next((k for k, t in enumerate(a) if t.v == "=>"), None)
+            out.append(_h_eval(a[arrow + 1:] if arrow is not None else a, self.env))
+        return out
+
+    def primary(self):
+        t = self.take()
+        if t.v == "(":
+            self.i -= 1
+            close = _close(self.t, self.i)
+            parts = _split_top(self.t[self.i + 1:close])
+            if len(parts) != 1 or _h_upto(parts[0], 0, "=>") < len(parts[0]):  # aggregate
+                self.args()
+                return None
+            return self.args()[0]
+        if t.k == "num":
+            n = t.v.replace("_", "")
+            return int(n) if n.isdigit() else None
+        if t.k == "chr":
+            return None
+        if t.k not in ("id", "esc"):
+            raise _HBad()
+        name = t.v
+        while self.peek() == "." and self.i + 1 < len(self.t):  # lib.pkg.name
+            self.take()
+            name = self.take().v
+        if self.peek() == "'":  # attribute (x'length) or qualified expression (t'(...))
+            self.take()
+            if self.peek() != "(":
+                self.take()
+            if self.peek() == "(":
+                self.args()
+            return None
+        if self.peek() == "(":
+            return _h_call(name, self.args())
+        if name in ("true", "false"):
+            return name == "true"
+        return self.env.get(name)
+
+
+def _h_eval(toks, env):
+    """Value (int or bool) of a static VHDL expression, or None when it is not known."""
+    if not toks:
+        return None
+    p = _HEval(toks, env)
+    try:
+        v = p.expr()
+    except Exception:  # anything unexpected: unknown, which keeps every branch
+        return None
+    return v if p.i == len(toks) else None
+
+
+def _h_range(toks, env):
+    """for-generate range -> list of values ([] if provably empty), or None if not known."""
+    k = min(_h_upto(toks, 0, "to"), _h_upto(toks, 0, "downto"))
+    if k >= len(toks):
+        return None
+    a, b = _h_eval(toks[:k], env), _h_eval(toks[k + 1:], env)
+    if not (_isint(a) and _isint(b)):
+        return None
+    r = range(a, b - 1, -1) if toks[k].v == "downto" else range(a, b + 1)
+    return list(r) if len(r) <= 4096 else None
+
+
+def _h_choice(c, x, env):
+    if x is None:
+        return None
+    k = min(_h_upto(c, 0, "to"), _h_upto(c, 0, "downto"))
+    if k < len(c):
+        a, b = _h_eval(c[:k], env), _h_eval(c[k + 1:], env)
+        if not (_isint(a) and _isint(b) and _isint(x)):
+            return None
+        return min(a, b) <= x <= max(a, b)
+    y = _h_eval(c, env)
+    if y is None or isinstance(x, bool) != isinstance(y, bool):
+        return None
+    return x == y
+
+
+def _h_branches(f, env):
+    """Branches of an if/case generate that may be taken: one when decided, several when not."""
+    out = []
+    if f["kind"] == "if":
+        for b, c in enumerate(f["alts"]):
+            v = True if c is None else _h_eval(c, env)
+            if v is True:
+                out.append(b)
+                break
+            if v is not False:
+                out.append(b)
+        return out
+    x = _h_eval(f["expr"], env)
+    for b, choices in enumerate(f["alts"]):
+        hit = False
+        for c in choices:
+            r = True if (len(c) == 1 and c[0].v == "others") else _h_choice(c, x, env)
+            if r is True:
+                hit = True
+                break
+            if r is None:
+                hit = None
+        if hit is not False:
+            out.append(b)
+        if hit is True:
+            break
+    return out
+
+
+def _h_active(m, env):
+    """Generate branches of m that exist with this env -> ({(frame, branch)}, {for-frame: loop value or None}).
+    A for-generate stays one collapsed copy; its body is evaluated for each loop value (union), and is
+    dropped only when its range is provably empty."""
+    kids = {}
+    for fi, f in enumerate(m.gens):
+        kids.setdefault(f["parent"], []).append(fi)
+    active, bind, budget = set(), {}, [4096]
+
+    def walk(parent, env):
+        for fi in kids.get(parent, ()):
+            f = m.gens[fi]
+            if f["kind"] != "for":
+                for b in _h_branches(f, env):
+                    active.add((fi, b))
+                    walk((fi, b), env)
+                continue
+            vals = _h_range(f["range"], env)
+            if vals == []:
+                continue
+            active.add((fi, 0))
+            if vals is not None and len(vals) <= 64 and budget[0] >= len(vals) and (fi, 0) in kids:
+                budget[0] -= len(vals)
+                for x in vals:
+                    walk((fi, 0), ChainMap({f["var"]: x}, env))
+            elif (fi, 0) in kids:
+                walk((fi, 0), ChainMap({f["var"]: vals[0] if vals and len(vals) == 1 else None}, env))
+            b = vals[0] if vals and len(vals) == 1 else None
+            bind[fi] = b if bind.get(fi, b) == b else None
+
+    walk(None, env)
+    return active, bind
+
+
+def _h_scope(m, key, env, bind):
+    """env plus the loop variables of the for-generates around an item (known only for 1-value ranges)."""
+    lv = {}
+    while key is not None:
+        f = m.gens[key[0]]
+        if f["kind"] == "for":
+            lv.setdefault(f["var"], bind.get(key[0]))
+        key = f["parent"]
+    return ChainMap(lv, env) if lv else env
+
+
+def _pkg_env(name, cache, depth=0):
+    """Constants of a VHDL package (its own, evaluated with the packages it uses)."""
+    if name in cache:
+        return cache[name]
+    cache[name] = {}
+    pk = PACKAGES.get(name)
+    if not pk:
+        return cache[name]
+    env = {}
+    for u in pk["uses"]:
+        if u != name and depth < 8:
+            env.update(_pkg_env(u, cache, depth + 1))
+    own = {}
+    scope = ChainMap(own, env)
+    for nm, val in pk["consts"]:
+        if val:
+            own[nm] = _h_eval(val, scope)
+        elif val is None:  # simulation-only value (translate_off)
+            own[nm] = None
+        else:  # deferred constant: value in the package body
+            own.setdefault(nm, None)
+    cache[name] = own
+    return own
+
+
+def _h_env(m, actuals, penv):
+    """Generic values (actual if the instance sets it, else default) and architecture constants."""
+    env = dict(penv)
+    for nm, dt in m.generics:
+        env[nm] = actuals[nm] if nm in actuals else _h_eval(dt, env)
+    for nm, vt in m.consts:
+        env[nm] = _h_eval(vt, env) if vt else None
+    return env
+
+
+def _h_actuals(inst, callee, env):
+    """Generic map of an instance as values for a VHDL callee (unknown actuals stay None, not default)."""
+    if callee.lang != "vhdl":
+        return {}
+    names = [g for g, _ in callee.generics]
+    pt = inst.get("ptoks")
+    out = {}
+    for k, v in (pt if pt is not None else inst.get("params") or {}).items():
+        if k.startswith("#"):
+            if not k[1:].isdigit() or int(k[1:]) >= len(names):
+                continue
+            k = names[int(k[1:])]
+        if pt is not None:
+            out[k.lower()] = _h_eval(v, env) if env is not None else None
+        else:  # Verilog parent: literal numbers only
+            out[k.lower()] = _eval(v, {}) if isinstance(v, str) else None
+    return out
 
 
 # ----------------------------------------------------------------------------
@@ -1110,7 +1579,12 @@ def _conn_ids(expr_toks, lang):
 
 
 def build_defs(design: dict, modules: list, rel=lambda p: p):
-    """Add rtl:<module> defs (and black boxes) to the design; return the def id map."""
+    """Add rtl:<module> defs (and black boxes) to the design; return the def id map.
+
+    VHDL is elaborated from the roots down: generic actuals are evaluated in the parent's scope
+    (its generics, constants and package constants) and only the generate branches that may exist
+    are kept; a branch whose condition cannot be evaluated is kept. A module whose kept content
+    differs between instances gets one def per variant: rtl:<name>, rtl:<name>~2, ..."""
     defs = design["defs"]
     by_name = {}
     for m in modules:
@@ -1121,104 +1595,164 @@ def build_defs(design: dict, modules: list, rel=lambda p: p):
         ids[key] = "rtl:" + m.name
     members = {m.name: _members(m) for m in by_name.values()}
     _propagate_members(by_name, members)
-    instantiated = set()
+
+    def callee_of(inst):
+        if inst["type"] in INTERFACES:
+            return None
+        return by_name.get(inst["type"]) or by_name.get(inst["type"].lower())
+
+    def key_of(m):
+        return m.name.lower() if m.lang == "vhdl" else m.name
+
+    instantiated = {ids[key_of(c)] for m in by_name.values() for c in map(callee_of, m.insts) if c}
+    pcache, penvs, variants, memo, sigs, busy = {}, {}, {}, {}, {}, set()
+
+    def penv(m):
+        k = tuple(m.uses)
+        if k not in penvs:
+            penvs[k] = {}
+            for u in m.uses:
+                penvs[k].update(_pkg_env(u, pcache))
+        return penvs[k]
+
+    def elab(m, actuals, depth):
+        mkey = key_of(m)
+        esig = (mkey, tuple(sorted(actuals.items())))
+        if esig in memo:
+            return memo[esig]
+        if esig in busy or depth > 32:  # recursive instantiation: refer to the first variant
+            return ids[mkey]
+        busy.add(esig)
+        env = _h_env(m, actuals, penv(m)) if m.lang == "vhdl" else None
+        active, bind = _h_active(m, env) if m.gens else (set(), {})
+        keep = lambda x: x.get("gen") is None or x["gen"] in active
+        insts = [x for x in m.insts if keep(x)]
+        kids = []
+        for inst in insts:
+            c = callee_of(inst)
+            sc = _h_scope(m, inst.get("gen"), env, bind) if env is not None else None
+            kids.append(elab(c, _h_actuals(inst, c, sc), depth + 1) if c else None)
+        procs = [x for x in m.procs if keep(x)]
+        assigns = [x for x in m.assigns if keep(x)]
+        sig = (mkey, tuple(map(id, insts)), tuple(map(id, procs)), tuple(map(id, assigns)), tuple(kids))
+        did = sigs.get(sig)
+        if did is None:
+            vs = variants.setdefault(mkey, [])
+            did = ids[mkey] if not vs else "%s~%d" % (ids[mkey], len(vs) + 1)
+            vs.append((did, insts, kids, procs, assigns))
+            sigs[sig] = did
+        busy.discard(esig)
+        memo[esig] = did
+        return did
+
     for key, m in by_name.items():
-        env = _int_env(m.params)
-        d = M.new_def(m.name, "rtl", src={"file": rel(m.file), "line": m.line}, lang=m.lang)
-        clocks = {p["clk"] for p in m.procs if p.get("clk")}
-        resets = {p["rst"]: p.get("pol") for p in m.procs if p.get("rst")}
-        for pn in m.order:
-            p = m.ports[pn]
-            kind = p.get("kind") or ("clk" if pn in clocks else "rst" if pn in resets else "")
-            d["pins"].append(M.pin(pn, p.get("dir", "inout"), kind, w=p.get("w") or None,
-                                   range=p.get("range") or None, bus=p.get("bus"),
-                                   pol=resets.get(pn) if pn in resets else None))
-        if m.params:
-            d["params"] = dict(m.params)
-        sig = {}  # signal -> list of ends
-
-        def touch(s, end):
-            sig.setdefault(s, []).append(end)
-
-        portnames = set(m.order)
-        lower = {p.lower(): p for p in portnames} if m.lang == "vhdl" else None
-        for pn in m.order:
-            touch(pn, ["", pn])
-        iface = {pn for pn in m.order if m.ports[pn].get("kind") == "bus"}
-        mine = members[m.name]
-        for x in mine:
-            touch(x, ["", x])
-        aliases = []
-        for inst in m.insts:
-            if inst["type"] in INTERFACES:
-                iface.add(inst["name"])
-                for port, expr in inst["conns"].items():  # interface ports: bram_if b(.clk(clk))
-                    for s2 in _conn_ids(expr, m.lang)[:1]:
-                        aliases.append((inst["name"] + "." + port, s2))
-                continue
-            callee = by_name.get(inst["type"]) or by_name.get(inst["type"].lower())
-            if callee:
-                cid = ids[callee.name.lower() if callee.lang == "vhdl" else callee.name]
-                instantiated.add(cid)
-            else:
-                cid = "bb:" + inst["type"]
-                if cid not in defs:
-                    kind = "prim" if XILINX_PRIMS.match(inst["type"]) else "bb"
-                    defs[cid] = M.new_def(inst["type"], kind)
-                    if CDC_PRIMS.match(inst["type"]):
-                        defs[cid]["cdc"] = True
-            conns = dict(inst["conns"])
-            if inst["pos"]:
-                order = callee.order if callee else ["p%d" % k for k in range(len(inst["pos"]))]
-                for k, item in enumerate(inst["pos"]):
-                    if k < len(order):
-                        conns[order[k]] = item
-            if ".*" in conns:
-                conns.pop(".*")
-                if callee:
-                    for pn in callee.order:
-                        if pn not in conns and (pn in portnames or pn in m.signals):
-                            conns[pn] = [_T("id", pn, 0)]
-            entry = {"name": inst["name"], "def": cid, "line": inst["line"]}
-            if inst["params"]:
-                entry["params"] = inst["params"]
-            d["insts"].append(entry)
-            bbdef = defs.get(cid) if cid.startswith("bb:") else None
-            for formal, expr in conns.items():
-                if bbdef is not None and formal not in M.pin_index(bbdef):
-                    bbdef["pins"].append(M.pin(formal, "out" if _PRIM_OUT.match(formal) else "in"))
-                cids = _conn_ids(expr, m.lang)
-                for s in cids:
-                    if lower is not None:
-                        s = lower.get(s.lower(), s)
-                    touch(s, [inst["name"], formal])
-                    if s in mine and callee and callee.ports.get(formal, {}).get("dir") == "out":
-                        mine[s] = "out"  # member driven by a child output
-                if callee and callee.ports.get(formal, {}).get("kind") == "bus" and cids:
-                    base = cids[0].split(".")[0]
-                    for cm in members.get(callee.name, {}):
-                        if cm.startswith(formal + "."):
-                            touch(base + "." + cm[len(formal) + 1:], [inst["name"], cm])
-                            if base + "." + cm[len(formal) + 1:] in mine and members[callee.name][cm] == "out":
-                                mine[base + "." + cm[len(formal) + 1:]] = "out"
-        _logic_nodes(design, m, d, touch, rel(m.file), iface)
-        for a, b in aliases:
-            if a in sig:
-                sig.setdefault(b, []).extend(sig.pop(a))
-        for x, dr in mine.items():
-            d["pins"].append(M.pin(x, "out" if dr == "out" else "in", "clk" if dr == "clk" else "", member=True))
-        for s, ends in sig.items():
-            if len(ends) < 2:
-                continue
-            w = m.ports[s].get("w") if s in m.ports else m.signals.get(s)
-            net = {"name": s, "kind": "bus" if s in iface else "", "ends": ends}
-            if w:
-                net["w"] = w
-            d["nets"].append(net)
-        defs[ids[key]] = d
-    _finish_kinds(design, [ids[k] for k in by_name])
+        if ids[key] not in instantiated:
+            elab(m, {}, 0)
+    for key, m in by_name.items():  # not reached from a root (or only through disabled branches)
+        if key not in variants:
+            elab(m, {}, 0)
+    built = []
+    for key, m in by_name.items():
+        for did, insts, kids, procs, assigns in variants.get(key, ()):
+            _rtl_def(design, m, did, insts, kids, procs, assigns, by_name, members, rel)
+            built.append(did)
+    _finish_kinds(design, built)
     roots = [ids[k] for k in by_name if ids[k] not in instantiated]
     return ids, roots
+
+
+def _rtl_def(design, m, did, insts, kids, procs, assigns, by_name, members, rel):
+    """One rtl def from the kept instances (kids: their def ids), processes and assignments of m."""
+    defs = design["defs"]
+    d = M.new_def(m.name, "rtl", src={"file": rel(m.file), "line": m.line}, lang=m.lang)
+    clocks = {p["clk"] for p in procs if p.get("clk")}
+    resets = {p["rst"]: p.get("pol") for p in procs if p.get("rst")}
+    for pn in m.order:
+        p = m.ports[pn]
+        kind = p.get("kind") or ("clk" if pn in clocks else "rst" if pn in resets else "")
+        d["pins"].append(M.pin(pn, p.get("dir", "inout"), kind, w=p.get("w") or None,
+                               range=p.get("range") or None, bus=p.get("bus"),
+                               pol=resets.get(pn) if pn in resets else None))
+    if m.params:
+        d["params"] = dict(m.params)
+    sig = {}  # signal -> list of ends
+
+    def touch(s, end):
+        sig.setdefault(s, []).append(end)
+
+    portnames = set(m.order)
+    lower = {p.lower(): p for p in portnames} if m.lang == "vhdl" else None
+    for pn in m.order:
+        touch(pn, ["", pn])
+    iface = {pn for pn in m.order if m.ports[pn].get("kind") == "bus"}
+    mine = members[m.name]
+    for x in mine:
+        touch(x, ["", x])
+    aliases = []
+    for inst, cid in zip(insts, kids):
+        if inst["type"] in INTERFACES:
+            iface.add(inst["name"])
+            for port, expr in inst["conns"].items():  # interface ports: bram_if b(.clk(clk))
+                for s2 in _conn_ids(expr, m.lang)[:1]:
+                    aliases.append((inst["name"] + "." + port, s2))
+            continue
+        callee = by_name.get(inst["type"]) or by_name.get(inst["type"].lower())
+        if not callee:
+            cid = "bb:" + inst["type"]
+            if cid not in defs:
+                kind = "prim" if XILINX_PRIMS.match(inst["type"]) else "bb"
+                defs[cid] = M.new_def(inst["type"], kind)
+                if CDC_PRIMS.match(inst["type"]):
+                    defs[cid]["cdc"] = True
+        conns = dict(inst["conns"])
+        if inst["pos"]:
+            order = callee.order if callee else ["p%d" % k for k in range(len(inst["pos"]))]
+            for k, item in enumerate(inst["pos"]):
+                if k < len(order):
+                    conns[order[k]] = item
+        if ".*" in conns:
+            conns.pop(".*")
+            if callee:
+                for pn in callee.order:
+                    if pn not in conns and (pn in portnames or pn in m.signals):
+                        conns[pn] = [_T("id", pn, 0)]
+        entry = {"name": inst["name"], "def": cid, "line": inst["line"]}
+        if inst["params"]:
+            entry["params"] = inst["params"]
+        d["insts"].append(entry)
+        bbdef = defs.get(cid) if cid.startswith("bb:") else None
+        for formal, expr in conns.items():
+            if bbdef is not None and formal not in M.pin_index(bbdef):
+                bbdef["pins"].append(M.pin(formal, "out" if _PRIM_OUT.match(formal) else "in"))
+            cids = _conn_ids(expr, m.lang)
+            for s in cids:
+                if lower is not None:
+                    s = lower.get(s.lower(), s)
+                touch(s, [inst["name"], formal])
+                if s in mine and callee and callee.ports.get(formal, {}).get("dir") == "out":
+                    mine[s] = "out"  # member driven by a child output
+            if callee and callee.ports.get(formal, {}).get("kind") == "bus" and cids:
+                base = cids[0].split(".")[0]
+                for cm in members.get(callee.name, {}):
+                    if cm.startswith(formal + "."):
+                        touch(base + "." + cm[len(formal) + 1:], [inst["name"], cm])
+                        if base + "." + cm[len(formal) + 1:] in mine and members[callee.name][cm] == "out":
+                            mine[base + "." + cm[len(formal) + 1:]] = "out"
+    _logic_nodes(design, m, d, touch, rel(m.file), iface, procs, assigns, did[4:])
+    for a, b in aliases:
+        if a in sig:
+            sig.setdefault(b, []).extend(sig.pop(a))
+    for x, dr in mine.items():
+        d["pins"].append(M.pin(x, "out" if dr == "out" else "in", "clk" if dr == "clk" else "", member=True))
+    for s, ends in sig.items():
+        if len(ends) < 2:
+            continue
+        w = m.ports[s].get("w") if s in m.ports else m.signals.get(s)
+        net = {"name": s, "kind": "bus" if s in iface else "", "ends": ends}
+        if w:
+            net["w"] = w
+        d["nets"].append(net)
+    defs[did] = d
 
 
 def _propagate_members(by_name, members):
@@ -1279,11 +1813,11 @@ def _members(m):
     return use
 
 
-def _logic_nodes(design, m, d, touch, src_file, iface=()):
+def _logic_nodes(design, m, d, touch, src_file, iface=(), procs=None, assigns=None, lname=None):
     """One node per always/process block and per continuous assignment."""
     defs = design["defs"]
-    blocks = list(m.procs)
-    assigns = m.assigns
+    blocks = list(m.procs if procs is None else procs)
+    assigns = all_assigns = m.assigns if assigns is None else assigns
     if len(assigns) > 24:
         merged = {"kind": "comb", "w": _uniq(x for a in assigns for x in a["w"]),
                   "r": _uniq(x for a in assigns for x in a["r"]), "line": assigns[0]["line"], "label": "assigns"}
@@ -1305,7 +1839,7 @@ def _logic_nodes(design, m, d, touch, src_file, iface=()):
             n2 += 1
             name = "%s~%d" % (base, n2)
         used.add(name)
-        did = "logic:%s#%d" % (m.name, k)
+        did = "logic:%s#%d" % (lname or m.name, k)
         kind = {"ff": "reg", "latch": "latch"}.get(b["kind"], "comb")
         title = {"reg": "always_ff" if m.lang != "vhdl" else "process", "latch": "latch",
                  "comb": "always_comb" if b["kind"] == "comb" else "assign"}[kind]
@@ -1329,7 +1863,7 @@ def _logic_nodes(design, m, d, touch, src_file, iface=()):
             touch(s, [name, s])
         if kind == "comb":
             if b.get("label") == "assigns":
-                ld["deps"] = {w: a["r"] for a in m.assigns for w in a["w"] if ok(w)}
+                ld["deps"] = {w: a["r"] for a in all_assigns for w in a["w"] if ok(w)}
             else:
                 ld["deps"] = {w: b["r"] for w in b["w"]}
         if kind == "reg":
@@ -1362,6 +1896,7 @@ def parse_files(paths: list, incdirs=()) -> list:
     import os
     mods = []
     del MISSING_INCLUDES[:]
+    PACKAGES.clear()
     incdirs = list(dict.fromkeys(list(incdirs) + [os.path.dirname(p) for p in paths]))
     for p in paths:
         try:

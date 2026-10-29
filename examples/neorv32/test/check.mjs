@@ -61,7 +61,7 @@ await send('Page.navigate', { url });
 let r = await until(`window.__demo && __demo.st.ready && ${term}.includes('Auto-boot in 8s. Press any key to abort.')`, 20000);
 ok('bootloader banner', r.v, { ms: r.ms, text: (await ev(term)).trim().split('\n').slice(0, 4) });
 
-// 2. diagram: probe -> node mapping on the open level, dimmed phantoms, glow while the bootloader runs
+// 2. diagram: probe -> node mapping on the open level, no phantoms, glow while the bootloader runs
 r = await until(`__demo.level() === '/neorv32_top_inst' && __demo.mapped().length > 5`, 20000);
 const lstats = await ev(`document.getElementById('fpa').contentWindow.__fpaLayoutStats`);
 ok('diagram /neorv32_top_inst shown from the layout cache', r.v && lstats && lstats.hit >= 1 && !lstats.worker,
@@ -70,11 +70,11 @@ const mapped = await ev(`__demo.mapped()`), dimmed = await ev(`__demo.dimmed()`)
 await sleep(1500);
 const lit = await ev(`__demo.lit()`);
 ok('diagram nodes mapped (level /neorv32_top_inst)', mapped.length >= 9, { n: mapped.length, nodes: mapped.map((m) => m.node) });
-ok('phantom blocks dimmed', dimmed.length >= 20 && dimmed.includes('i:uart1_inst') && !dimmed.includes('i:uart0_inst'), { n: dimmed.length, sample: dimmed.slice(0, 6) });
+ok('no phantom blocks (fpa draws what GHDL elaborates)', dimmed.length === 0, { n: dimmed.length, sample: dimmed.slice(0, 6) });
 ok('glow driven by probes (bootloader running)', lit.some((l) => l.node === 'i:boot_rom_inst') && lit.some((l) => l.node === 'i:core_complex_inst'),
    lit.map((l) => l.node + '=' + l.a.toFixed(2)));
-const titleOk = await ev(`(() => { const d = document.getElementById('fpa').contentDocument; const g = d.querySelector('#vp g.node[data-id="i:spi_inst"] > title'); return g && g.textContent; })()`);
-ok('phantom tooltip', titleOk && titleOk.includes('not enabled in this configuration'), titleOk);
+const drawn = await ev(`(() => { const d = document.getElementById('fpa').contentDocument; const has = (n) => !!d.querySelector('#vp g.node[data-id="i:' + n + '"]'); return { uart0_inst: has('uart0_inst'), gpio_inst: has('gpio_inst'), uart1_inst: has('uart1_inst'), spi_inst: has('spi_inst'), dma_inst: has('dma_inst') }; })()`);
+ok('disabled peripherals not drawn', drawn && drawn.uart0_inst && drawn.gpio_inst && !drawn.uart1_inst && !drawn.spi_inst && !drawn.dma_inst, drawn);
 await shot('1_boot');
 
 // 3. speed: real time, then turbo
@@ -143,15 +143,16 @@ r = await waitUpload('hello_world', 30000);
 const again = (await until(`${count('Hello world! :)')} > ${hellos}`, 15000)).v;
 ok('next upload after the timeout works', r.v && again && !(await ev('__demo.st.lastError')), { ms: r.ms });
 
-// 8. other levels: CPU internals glow, disabled CPU extensions dimmed
+// 8. other levels: CPU internals glow, disabled CPU extensions not drawn
 await ev(`(document.getElementById('fpa').contentWindow.__fpa.go(['neorv32_top_inst','core_complex_inst','cpu_inst']), 1)`);
 await ev(`__demo.loadProgram('benchmark')`);
 r = await until(`__demo.level() === '/neorv32_top_inst/core_complex_inst/cpu_inst' && __demo.mapped().length >= 2`, 20000);
 await waitUpload('benchmark', 40000);
 await sleep(800);
 const litCpu = await ev(`__demo.lit()`), dimCpu = await ev(`__demo.dimmed()`);
-ok('cpu_inst level: front end + LSU glow, disabled units dimmed', litCpu.some((l) => l.node === 'i:cpu_frontend_inst') && dimCpu.includes('i:cpu_pmp_inst'),
-   { lit: litCpu.map((l) => l.node + '=' + l.a.toFixed(2)), dimmed: dimCpu });
+const pmpDrawn = await ev(`!!document.getElementById('fpa').contentDocument.querySelector('#vp g.node[data-id="i:cpu_pmp_inst"]')`);
+ok('cpu_inst level: front end + LSU glow, disabled units not drawn', litCpu.some((l) => l.node === 'i:cpu_frontend_inst') && dimCpu.length === 0 && !pmpDrawn,
+   { lit: litCpu.map((l) => l.node + '=' + l.a.toFixed(2)), dimmed: dimCpu, pmp_drawn: pmpDrawn });
 await shot('6_cpu_level');
 r = await until(`${term}.includes('iterations/MHz')`, 30000);
 const cm = (await ev(term)).split('\n').filter((l) => /Benchmark|Result|Iterations|Total ticks|Correct operation|Errors detected|CoreMark/.test(l));

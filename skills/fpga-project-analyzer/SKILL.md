@@ -55,6 +55,7 @@ the empty path (`|net`). `net` + `level` on a finding draws that wire red.
   project code - ask the user before using it on a repository they did not write.
 
 ## Limits
-Light RTL parsing (no Vivado) does not elaborate generates or evaluate every parameter; when hierarchy
-looks wrong, say so and offer `deep`. BD Tcl that relies on apply_bd_automation is only partly readable
+Light RTL parsing (no Vivado) evaluates VHDL generics and `if`/`case ... generate` conditions (a
+condition it cannot evaluate keeps its branch), draws a `for ... generate` once, and does not evaluate
+Verilog generates; when hierarchy looks wrong, say so and offer `deep`. BD Tcl that relies on apply_bd_automation is only partly readable
 without Vivado (the summary says so).

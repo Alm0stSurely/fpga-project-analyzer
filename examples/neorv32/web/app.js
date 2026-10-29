@@ -356,8 +356,9 @@ function rebuildLevel() {
     } else if (isPhantom(full)) {
       g.classList.add('demo-off');
       const t = F.doc.createElementNS('http://www.w3.org/2000/svg', 'title');
-      t.textContent = name + ': not enabled in this configuration. fpa draws every VHDL generate branch; ' +
-        'GHDL elaboration of the same RTL shows this instance does not exist with the test setup\'s generics.';
+      t.textContent = name + ': not enabled in this configuration. fpa keeps a generate branch whose condition ' +
+        'it cannot evaluate; GHDL elaboration of the same RTL shows this instance does not exist with the test ' +
+        'setup\'s generics.';
       g.insertBefore(t, g.firstChild);
     }
   }

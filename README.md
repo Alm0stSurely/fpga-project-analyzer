@@ -93,8 +93,10 @@ up as the CPU uses them. Sources: [`examples/neorv32`](examples/neorv32).
 ## Limitations
 
 Without Vivado, RTL is read structurally: clocks routed through SystemVerilog interface internals may go
-untraced, so "no findings" can mean "not checked". VHDL `generate` conditions are not evaluated, so disabled
-branches still appear in the diagram. `fpa.py deep` uses Vivado elaboration for exact results.
+untraced, so "no findings" can mean "not checked". VHDL generics and `if`/`case ... generate` conditions are
+evaluated (package constants and simple helper functions included); a condition fpa cannot evaluate keeps its
+branch, a `for ... generate` is drawn once, and Verilog `generate` blocks are not evaluated. `fpa.py deep` uses
+Vivado elaboration for exact results.
 Findings are candidates to confirm against the source.
 
 ## Contributing

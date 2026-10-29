@@ -56,8 +56,9 @@ the variables. Rebuilding from the same tools and sources gives the same `neorv3
   On every animation frame, the page turns the probe counters gathered since the last frame into a glow level
   for each block. It applies the glow to the matching node at the open hierarchy level, or to that node's
   ancestor if the block itself isn't shown there.
-- **Phantom blocks.** fpa does not evaluate VHDL generate conditions, so it draws all 108 RTL instances, while
-  GHDL elaborates only 34. The rest (the phantoms) are dimmed and get a tooltip.
+- **Phantom blocks.** fpa evaluates generics and VHDL generate conditions, so it draws the same 34 RTL instances
+  that GHDL elaborates. As a safety net, any block fpa draws that GHDL does not elaborate (a branch fpa could not
+  decide) is dimmed and gets a tooltip. `fpa_map.py` reports the count; with v1.13.7 it is 0.
 - **Click to focus.** Clicking a glowing block focuses its widget: UART goes to the terminal, GPIO to the LEDs,
   and the rest to the activity table.
 - **Diagram and layout cache.** `design.html` is fpa's output, unchanged except for one scrubbed metadata field

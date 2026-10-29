@@ -79,8 +79,9 @@
 </main>
 
 <footer>
-  NEORV32 &copy; Stephan Nolting and contributors (BSD-3-Clause). The diagram is fpa's output, shipped as is: fpa does not evaluate
-  VHDL generate conditions, so the blocks this configuration leaves out are shown dimmed. The benchmark program is derived from EEMBC
+  NEORV32 &copy; Stephan Nolting and contributors (BSD-3-Clause). The diagram is fpa's output, shipped as is: fpa evaluates the
+  generics and VHDL generate conditions, so it draws only the blocks this configuration builds; any block it
+  draws that GHDL does not elaborate is shown dimmed. The benchmark program is derived from EEMBC
   CoreMark sources (Apache-2.0), modified to fit 16 KiB; its results are not CoreMark scores.
   <a href="THIRD_PARTY.txt">Third-party notices</a>.
 </footer>

@@ -1,6 +1,6 @@
 {
  "about": "Probe -> fpa node table for the activity highlight. 'fpa' is the instance path as fpa names it (generate scopes dropped); 'rtl' is the elaborated path (GHDL/Verilator, with generate scopes). 'probes' are names from neo_probe_names() (counters of the last step); the block's activity is their sum divided by the cycles in the window. 'widget' is the sim-panel element a click on the block focuses. build.sh checks every 'fpa' path against design.html and against the GHDL-elaborated tree and writes the checked copy to fpa-map.json.",
- "checked": "every 'fpa' path exists in design.html (1495 instance paths) and is elaborated by GHDL",
+ "checked": "every 'fpa' path exists in design.html (361 instance paths) and is elaborated by GHDL",
  "entries": [
   {
    "id": "cpu",
@@ -256,50 +256,11 @@
    "kind": "rtl"
   }
  ],
- "phantoms": [
-  "/neorv32_top_inst/amo_rmw_inst",
-  "/neorv32_top_inst/bus_amo_rvs_inst",
-  "/neorv32_top_inst/cfs_inst",
-  "/neorv32_top_inst/core_arbiter_inst",
-  "/neorv32_top_inst/core_complex_inst/cpu_inst/cpu_alu_inst/cpu_alu_bitmanip_inst",
-  "/neorv32_top_inst/core_complex_inst/cpu_inst/cpu_alu_inst/cpu_alu_cfu_inst",
-  "/neorv32_top_inst/core_complex_inst/cpu_inst/cpu_alu_inst/cpu_alu_cond_inst",
-  "/neorv32_top_inst/core_complex_inst/cpu_inst/cpu_alu_inst/cpu_alu_crypto_inst",
-  "/neorv32_top_inst/core_complex_inst/cpu_inst/cpu_alu_inst/cpu_alu_fpu_inst",
-  "/neorv32_top_inst/core_complex_inst/cpu_inst/cpu_alu_inst/cpu_alu_muldiv_inst/multiplier_inst",
-  "/neorv32_top_inst/core_complex_inst/cpu_inst/cpu_counters_inst/hpmcnt_inst",
-  "/neorv32_top_inst/core_complex_inst/cpu_inst/cpu_hwtrig_inst",
-  "/neorv32_top_inst/core_complex_inst/cpu_inst/cpu_pmp_inst",
-  "/neorv32_top_inst/core_complex_inst/cpu_inst/cpu_trace_inst",
-  "/neorv32_top_inst/core_complex_inst/cpu_inst/trace_simlog_inst",
-  "/neorv32_top_inst/core_complex_inst/dcache_inst",
-  "/neorv32_top_inst/core_complex_inst/icache_inst",
-  "/neorv32_top_inst/core_complex_inst/reg_stage_inst",
-  "/neorv32_top_inst/debug_dm_inst",
-  "/neorv32_top_inst/debug_dtm_inst",
-  "/neorv32_top_inst/dma_bus_switch_inst",
-  "/neorv32_top_inst/dma_inst",
-  "/neorv32_top_inst/gptmr_inst",
-  "/neorv32_top_inst/imem_inst/imem_rom_inst",
-  "/neorv32_top_inst/neoled_inst",
-  "/neorv32_top_inst/onewire_inst",
-  "/neorv32_top_inst/pwm_inst",
-  "/neorv32_top_inst/sdi_inst",
-  "/neorv32_top_inst/slink_inst",
-  "/neorv32_top_inst/smc_inst",
-  "/neorv32_top_inst/spi_inst",
-  "/neorv32_top_inst/tracebuf_inst",
-  "/neorv32_top_inst/trng_inst",
-  "/neorv32_top_inst/twd_inst",
-  "/neorv32_top_inst/twi_inst",
-  "/neorv32_top_inst/uart1_inst",
-  "/neorv32_top_inst/wdt_inst",
-  "/neorv32_top_inst/xbus_inst"
- ],
+ "phantoms": [],
  "counts": {
-  "fpa_rtl_instances": 108,
+  "fpa_rtl_instances": 34,
   "elaborated": 34,
-  "not_elaborated": 74,
+  "not_elaborated": 0,
   "elaborated_missing_in_fpa": 0
  },
  "probe_names": [

@@ -4,13 +4,13 @@
 usage: fpa_map.py <design.html> <ghdl.tree.txt> <activity-map.json> <neorv32_sim_api.cpp> <out fpa-map.json>
 
 * design.html: fpa's viewer; its design JSON (script#fpa-data) gives every instance path the
-  diagram can show (fpa drops generate scopes from paths and draws every generate branch).
+  diagram can show (fpa drops generate scopes from paths and draws a for-generate body once).
 * ghdl.tree.txt: `ghdl --elab-run ... --disp-tree=inst` of the same sources and top, the ground
   truth of which instances exist for this configuration.
 * Every table entry must name a node that exists in design.html and is elaborated (for a process
   node: its enclosing instance is). Every probe must be one of neo_probe_names().
-* The fpa instances that GHDL does not elaborate (disabled generate branches) are written as
-  "phantoms" (subtree roots), so the page can dim them.
+* The fpa instances that GHDL does not elaborate (generate branches fpa could not decide) are written
+  as "phantoms" (subtree roots), so the page can dim them.
 Exits non-zero if any check fails.
 """
 import json
