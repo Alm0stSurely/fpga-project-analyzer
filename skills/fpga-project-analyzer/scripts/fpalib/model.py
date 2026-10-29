@@ -33,7 +33,9 @@ def new_def(name: str, kind: str, **kw) -> dict:
     return d
 
 
-_NOT_CLK = re.compile(r"(clk_?en|clken|clk_?ena|enable|clk_?sel|clk_?cnt|clk_?div|_en_?[io]?$|_cnt|_count)", re.I)
+# Names that look like clocks but are enables/selects/counters; e.g. NEORV32's clkgen_i / clk_gen are prescaled
+# clock-enable vectors. A real clock is still typed "clk" structurally when it clocks a process.
+_NOT_CLK = re.compile(r"(clk_?en|clken|clk_?ena|clk_?gen|enable|clk_?sel|clk_?cnt|clk_?div|_en_?[io]?$|_cnt|_count)", re.I)
 
 
 def guess_kind(name: str) -> str:
