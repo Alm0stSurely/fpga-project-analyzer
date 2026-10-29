@@ -11,6 +11,7 @@ class _XdcInterp(Interp):
     def __init__(self):
         super().__init__()
         self.props = []     # (prop, value, [patterns], line-ish)
+        self.cell_props = []  # (prop, value, [cell patterns]) from set_property ... [get_cells ...]
         self.clocks = []    # (name, period, [patterns])
 
     def c_get_ports(self, a):
@@ -19,6 +20,13 @@ class _XdcInterp(Interp):
         for r in rest:
             pats.extend(_split_list(r) if " " in r else [r])
         return " ".join("xport:" + p for p in pats)
+
+    def c_get_cells(self, a):
+        _, rest = self._opts(a, {"-filter", "-of_objects"})
+        pats = []
+        for r in rest:
+            pats.extend(_split_list(r) if " " in r else [r])
+        return " ".join("xcell:" + p for p in pats)
 
     def c_set_property(self, a):
         o, rest = self._opts(a, {"-dict"})
@@ -32,9 +40,14 @@ class _XdcInterp(Interp):
             pairs, objs = [(rest[0], rest[1])], rest[2:]
         else:
             return ""
-        pats = [x[6:] for x in " ".join(objs).split() if x.startswith("xport:")]
+        words = " ".join(objs).split()
+        pats = [x[6:] for x in words if x.startswith("xport:")]
+        cells = [x[6:] for x in words if x.startswith("xcell:")]
         for k, v in pairs:
-            self.props.append((k.upper(), v, pats))
+            if pats:
+                self.props.append((k.upper(), v, pats))
+            if cells:
+                self.cell_props.append((k.upper(), v, cells))
         return ""
 
     def c_create_clock(self, a):
@@ -53,7 +66,7 @@ def parse(paths: list) -> dict:
                 it.run(f.read(), it.globals)
         except OSError:
             continue
-    return {"props": it.props, "clocks": it.clocks}
+    return {"props": it.props, "clocks": it.clocks, "cell_props": it.cell_props}
 
 
 def _match(pat, name):

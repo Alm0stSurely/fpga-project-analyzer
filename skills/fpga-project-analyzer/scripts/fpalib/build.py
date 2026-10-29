@@ -297,8 +297,14 @@ def build(root: str, out_dir: str, top: str = "", bd: str = "", use_vivado: str 
                                    "incomplete, so Vivado will fail to elaborate." % ", ".join(where[:4]),
                          "fix": "Re-run the step that generates it, or add its directory to the include path.",
                          "by": "lint"})
-    findings += _io_check(design, (xp.get("xdc") if xp else []) or inv.get("xdc", []) +
-                          [p for p in inv.get("xdc", []) if p.endswith("board.xdc")], rel)
+    xdc_files = (xp.get("xdc") if xp else []) or inv.get("xdc", []) + \
+        [p for p in inv.get("xdc", []) if p.endswith("board.xdc")]
+    findings += _io_check(design, xdc_files, rel)
+    # cells constrained ASYNC_REG in XDC, for the synchronizer check in lint
+    areg = sorted({c for k, v, cells in xdc.parse(xdc_files)["cell_props"]
+                   if k == "ASYNC_REG" and str(v).strip("{}\"").lower() in ("true", "yes", "1") for c in cells})
+    if areg:
+        design["meta"]["xdc_async_reg"] = areg
     expect_bit = ""
     if xp and xp.get("top"):
         expect_bit = xp["top"] + ".bit"
@@ -312,11 +318,11 @@ def build(root: str, out_dir: str, top: str = "", bd: str = "", use_vivado: str 
     if facts:
         design["reports"] = {k: {"file": rel(v["file"]), "data": v["data"]} for k, v in facts.items()}
         findings += _report_findings(facts, rel)
+    meta["root"] = root  # lint reads RTL sources (ASYNC_REG attributes) relative to it
     findings += lint.run(design)["findings"]
     for i, f in enumerate(findings, 1):
         f["id"] = "L%d" % i
     design["findings"] = findings
-    meta["root"] = root
     meta["vivado"] = vver or None
     meta["logs"] = _rank_logs(inv.get("log", []), rel)
     meta["inventory"] = {k: len(v) for k, v in inv.items()}

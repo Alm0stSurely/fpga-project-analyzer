@@ -9,6 +9,8 @@ uses to colour wires.
 """
 from __future__ import annotations
 
+import fnmatch
+import os
 import re
 
 from . import model as M
@@ -345,10 +347,25 @@ def evaluate(cx: _Ctx, path: str, ctx: dict, depth: int = 0) -> dict:
                     direct = _direct(path, net, origin, inst["name"])
                     w = (net.get("w") or 0) if direct else 0
                     chain = bool(outs) and all(any(sd == d for _, sd in sink_regs.get(o, [])) for o in outs)
-                    cx.crossings.append({"level": path, "reg": path + "/" + inst["name"], "net": n,
+                    # synchronizer inside one register node: s <= {s[0], d} or a process with ff1 <= d; ff2 <= ff1.
+                    # The node's only data input is this crossing and it holds 2..10 flop bits (the reader drops a
+                    # register's reads of itself, so the internal chain is not visible as nets).
+                    me = inst["name"]
+                    data_ins = [p for p in idef["pins"] if p["dir"] == "in" and p["kind"] == "data"]
+                    qw = [(p["name"], p.get("w") or max([by_name.get(x, {}).get("w") or 1
+                                                          for x in by_end.all((me, p["name"]))] or [1]))
+                          for p in idef["pins"] if p["dir"] == "out"]
+                    shift = len(data_ins) == 1 and 2 <= sum(w_ for _, w_ in qw) <= 10
+                    if shift:
+                        stages = [(path + "/" + qn + "_reg", w_ > 1) for qn, w_ in qw]
+                    else:
+                        stages = [(path + "/" + x, False) for x in [me] + sorted(
+                            {si["name"] for o in outs for si, sd in sink_regs.get(o, []) if sd == d and si["name"] != me})]
+                    cx.crossings.append({"level": path, "reg": path + "/" + me, "net": n,
                                          "pin": q["name"], "from": src, "to": d, "origin": origin, "w": w,
                                          "rst": q["kind"] == "rst", "via": not direct,
-                                         "sync": bool(chain and direct and (net.get("w") or 1) <= 1)})
+                                         "sync": bool((chain or shift) and direct and (net.get("w") or 1) <= 1),
+                                         "stages": stages})
     for inst, idef, cpath, mode, d in leaf_info:
         if mode != "seq":
             continue
@@ -412,6 +429,59 @@ def dname(cx, d):
     return info.get("name", d) + (" %g MHz" % (f / 1e6) if f else "")
 
 
+_ATTR_V = re.compile(r"\(\*(.*?)\*\)", re.S)
+_ASYNC_V = re.compile(r"\basync_reg\b\s*(?:=\s*\"?\s*(\w+)\s*\"?)?", re.I)
+_ASYNC_VHD = re.compile(r"attribute\s+async_reg\s+of\s+([\w\s,]+?)\s*:\s*signal\s+is\s+\"?\s*(\w+)", re.I)
+
+
+def _src_text(cx, d):
+    src = d.get("src") or {}
+    f = src.get("file")
+    if not f:
+        return "", ""
+    path = f if os.path.isabs(f) else os.path.join(cx.design["meta"].get("root") or "", f)
+    memo = cx.__dict__.setdefault("_src_memo", {})
+    if path not in memo:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                memo[path] = fh.read()
+        except OSError:
+            memo[path] = ""
+    text = memo[path]
+    if path.lower().endswith((".vhd", ".vhdl")):
+        return text, "vhdl"
+    lines = text.splitlines()
+    region = "\n".join(lines[max(0, (src.get("line") or 1) - 1):])
+    m = re.search(r"\bendmodule\b", region)
+    return (region[:m.end()] if m else region), "verilog"
+
+
+def _async_reg(cx, regpath):
+    """Where ASYNC_REG is set for a register path: "xdc", "rtl" or "" (not found)."""
+    rel = regpath.lstrip("/")
+    base = rel.rpartition("/")[2]
+    for pat in cx.design["meta"].get("xdc_async_reg", []):
+        pat = re.sub(r"\[[^\]]*\]$", "", pat.strip("{}"))
+        if fnmatch.fnmatchcase(rel, pat) or fnmatch.fnmatchcase(base, pat):
+            return "xdc"
+    level = regpath.rpartition("/")[0]
+    d = cx.inst_def.get(level) if level else cx.defs.get(cx.design["top"])
+    text, lang = _src_text(cx, d or {})
+    sig = base[:-4] if base.endswith("_reg") else base
+    if lang == "vhdl":
+        for names, val in _ASYNC_VHD.findall(text):
+            if val.lower() in ("true", "yes") and sig.lower() in [x.strip().lower() for x in names.split(",")]:
+                return "rtl"
+    else:
+        for m in _ATTR_V.finditer(text):
+            a = _ASYNC_V.search(m.group(1))
+            if a and (a.group(1) or "true").lower() in ("true", "yes", "1"):
+                decl = text[m.end():text.find(";", m.end())]
+                if re.search(r"\b%s\b" % re.escape(sig), decl):
+                    return "rtl"
+    return ""
+
+
 def _finding(sev, path, rule, title, detail="", fix="", **kw):
     f = {"sev": sev, "path": path or "/", "rule": rule, "title": title, "by": "lint"}
     if detail:
@@ -441,10 +511,23 @@ def cdc_findings(cx):
         bits = ("%d-bit " % w) if w else ""
         src, dst = dname(cx, c["from"]), dname(cx, c["to"])
         if c.get("sync"):
+            stages = c.get("stages") or [(c["reg"], False)]
+            have = {r: _async_reg(cx, r) for r, _ in stages}
+            missing = [(r, vec) for r, vec in stages if not have[r]]
+            if missing:
+                cells = " ".join(r.lstrip("/") + ("[*]" if vec else "") for r, vec in missing)
+                out.append(_finding("med", c["reg"], "cdc-async-reg", "Synchronizer without ASYNC_REG %s → %s" % (src, dst),
+                                    "%s samples %s from %s; ASYNC_REG is not set on %s"
+                                    % (c["reg"], c["net"], c["origin"], ", ".join(r for r, _ in missing)),
+                                    "set_property ASYNC_REG TRUE [get_cells {%s}]  (or (* ASYNC_REG = \"TRUE\" *) on the "
+                                    "register) so placement keeps the stages adjacent; Vivado report_cdc flags it too." % cells,
+                                    net=c["net"], level=c["level"]))
+                continue
             out.append(_finding("info", c["reg"], "cdc-sync", "2-FF synchronizer %s → %s" % (src, dst),
-                                "%s samples %s from %s" % (c["reg"], c["net"], c["origin"]),
-                                "Mark both flops ASYNC_REG and exclude the first stage from timing.",
-                                net=c["net"], level=c["level"]))
+                                "%s samples %s from %s; ASYNC_REG set in %s"
+                                % (c["reg"], c["net"], c["origin"], "/".join(sorted(set(have.values())))),
+                                "Constrain the crossing into the first stage (set_max_delay -datapath_only or "
+                                "set_false_path).", net=c["net"], level=c["level"]))
             continue
         if c.get("rst"):
             out.append(_finding("med", c["reg"], "rst-cdc", "Reset from %s used in %s" % (src, dst),

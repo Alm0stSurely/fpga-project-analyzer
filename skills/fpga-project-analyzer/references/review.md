@@ -5,6 +5,8 @@ Only items an agent tends to miss. Confirm each against the source before report
 ## Clock-domain crossings
 - 1-bit level signal: two flops in the destination clock, no logic between them, `ASYNC_REG` on both,
   source registered in its own clock. `xpm_cdc_single` does all of this.
+  Lint `cdc-async-reg`: a recognized synchronizer (separate flops, a shift register `s <= {s[0], d}`, or one
+  process) without `ASYNC_REG` in RTL attributes or XDC.
 - Multi-bit: never per-bit 2-FF. Config words: `xpm_cdc_handshake` or capture with a synchronized
   strobe. Counters/pointers: `xpm_cdc_gray`. Streams: async FIFO (`xpm_fifo_async`, `axis_clock_converter`).
 - Pulses: `xpm_cdc_pulse`; a fast-to-slow pulse otherwise disappears.

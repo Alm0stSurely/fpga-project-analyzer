@@ -68,8 +68,8 @@ Open your project folder in your agent and ask:
 
 - **Diagram:** one offline HTML file. Click from block design → hierarchy → Verilog/VHDL → registers; wires
   coloured by clock domain.
-- **Checks:** clock-domain crossings traced from the block design into RTL, unconstrained pins, reset polarity,
-  address map, interrupts, PYNQ `.bit`/`.hwh` mistakes.
+- **Checks:** clock-domain crossings traced from the block design into RTL, synchronizers missing `ASYNC_REG`,
+  unconstrained pins, reset polarity, address map, interrupts, PYNQ `.bit`/`.hwh` mistakes.
 - **Logs:** failed Vivado/PetaLinux builds condensed to the lines that matter.
 - **Software links:** PYNQ notebooks, bare-metal C and device trees mapped to the blocks they drive.
 - **Docs:** export any level as SVG/PNG, or generate a Markdown design document with diagrams (`fpa doc`).
