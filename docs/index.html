@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FPGA Project Analyzer</title>
+<style>
+:root{--bg:#fbfcfd;--ink:#1d2733;--muted:#5d6b7c;--line:#d9dee5;--panel:#fff;--link:#1f5fa8;color-scheme:light dark}
+@media (prefers-color-scheme:dark){:root{--bg:#15181c;--ink:#e3e8ee;--muted:#98a4b1;--line:#2d343c;--panel:#1c2026;--link:#6aa8ff}}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 "Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}
+main{max-width:760px;margin:0 auto;padding:40px 20px}
+h1{font-size:24px;margin:0 0 6px}
+p{color:var(--muted)}
+a{color:var(--link)}
+.card{display:block;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin:18px 0;
+  text-decoration:none;color:var(--ink)}
+.card:hover{border-color:var(--link)}
+.card b{color:var(--link)}
+.card span{display:block;color:var(--muted);font-size:14px;margin-top:4px}
+</style>
+</head>
+<body>
+<main>
+  <h1>FPGA Project Analyzer (fpa)</h1>
+  <p>See and review Vivado, Zynq and PYNQ projects visually: drill-down Vivado-style diagrams, plus the bugs that
+    "timing met" hides. A CLI and an AI agent skill.</p>
+  <a class="card" href="demo/neorv32/">
+    <b>Live demo: NEORV32 RISC-V SoC</b>
+    <span>fpa's diagram of the unmodified NEORV32 v1.13.7 RTL next to the same RTL simulated live in your browser
+      (GHDL, Verilator, WebAssembly). Load programs through the real bootloader and watch the blocks light up.</span>
+  </a>
+  <a class="card" href="https://github.com/al-nafisah/fpga-project-analyzer">
+    <b>Source, install and usage on GitHub</b>
+    <span>github.com/al-nafisah/fpga-project-analyzer</span>
+  </a>
+</main>
+</body>
+</html>

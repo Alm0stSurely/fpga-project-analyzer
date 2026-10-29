@@ -1,0 +1,38 @@
+[
+ {
+  "name": "hello_world",
+  "file": "programs/hello_world.bin",
+  "desc": "Prints the NEORV32 logo and \"Hello world! :)\" over UART0, then halts.",
+  "bytes": 4544
+ },
+ {
+  "name": "demo_blink_led",
+  "file": "programs/demo_blink_led.bin",
+  "desc": "8-bit binary counter on the GPIO LEDs, one step every 250 ms.",
+  "bytes": 488
+ },
+ {
+  "name": "demo_clint",
+  "file": "programs/demo_clint.bin",
+  "desc": "Timer interrupt once per second: prints the time, toggles LED0, sleeps (wfi) in between.",
+  "bytes": 7484
+ },
+ {
+  "name": "game_of_life_64x20",
+  "file": "programs/game_of_life_64x20.bin",
+  "desc": "Conway's Game of Life on a 64x20 torus. Press a key in the terminal to start or pause.",
+  "bytes": 5300
+ },
+ {
+  "name": "bus_explorer",
+  "file": "programs/bus_explorer.bin",
+  "desc": "Interactive bus console: type setup, press w, then write fffc0004 000000ff to set the LEDs.",
+  "bytes": 10040
+ },
+ {
+  "name": "benchmark",
+  "file": "programs/benchmark.bin",
+  "desc": "CPU benchmark, 1 iteration (about 1.8 M cycles): list, matrix and state-machine kernels; prints cycles and iterations/MHz.",
+  "bytes": 12680
+ }
+]

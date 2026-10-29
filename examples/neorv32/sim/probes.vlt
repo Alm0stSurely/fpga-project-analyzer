@@ -1,0 +1,41 @@
+`verilator_config
+// ---------------------------------------------------------------------------
+// Activity probes for the NEORV32 demo, read directly from the GHDL-synthesized
+// netlist (no extra wrapper ports). public_flat_rd keeps each signal as a
+// readable member of the Verilated model's root struct (rootp->...), even when
+// its module is inlined, without making the whole design public.
+// Module names are GHDL-mangled (<entity>_B<arch>_L<lib>_<generic hash>), hence
+// the wildcards. Record ports are flattened by GHDL into escaped identifiers
+// like "\bus_req_i[stb] ", which Verilator encodes as bus_req_i__05bstb__05d (C++)
+// and which -var matches by its plain name "bus_req_i[stb]" (or a wildcard).
+// ---------------------------------------------------------------------------
+
+// CPU: instruction fetch + data (load/store) bus requests, sleep (WFI)
+public_flat_rd -module "neorv32_cpu_Bneorv32_cpu_rtl*" -var "ibus_req_o*stb*"
+public_flat_rd -module "neorv32_cpu_Bneorv32_cpu_rtl*" -var "ibus_req_o*addr*"
+public_flat_rd -module "neorv32_cpu_Bneorv32_cpu_rtl*" -var "dbus_req_o*stb*"
+public_flat_rd -module "neorv32_cpu_Bneorv32_cpu_rtl*" -var "dbus_req_o*rw*"
+public_flat_rd -module "neorv32_cpu_Bneorv32_cpu_rtl*" -var "dbus_req_o*addr*"
+public_flat_rd -module "neorv32_cpu_Bneorv32_cpu_rtl*" -var "sleep_o"
+
+// Memories: IMEM / DMEM / boot ROM request strobes (+ write flag)
+public_flat_rd -module "neorv32_imem_B*"    -var "req_stb_i"
+public_flat_rd -module "neorv32_imem_B*"    -var "req_rw_i"
+public_flat_rd -module "neorv32_dmem_B*"    -var "req_stb_i"
+public_flat_rd -module "neorv32_dmem_B*"    -var "req_rw_i"
+public_flat_rd -module "neorv32_bootrom_B*" -var "req_stb_i"
+
+// IO devices: bus request strobes (one per device = per-device bus select)
+public_flat_rd -module "neorv32_uart_B*"    -var "bus_req_i*stb*"
+public_flat_rd -module "neorv32_gpio_B*"    -var "bus_req_i*stb*"
+public_flat_rd -module "neorv32_clint_B*"   -var "bus_req_i*stb*"
+public_flat_rd -module "neorv32_sysinfo_B*" -var "bus_req_i*stb*"
+
+// UART0 internals: control register (enable/prsc/baud), TX/RX engine state
+public_flat_rd -module "neorv32_uart_B*"    -var "ctrl"
+public_flat_rd -module "neorv32_uart_B*"    -var "tx"
+public_flat_rd -module "neorv32_uart_B*"    -var "rx"
+
+// CLINT: machine timer value and timer interrupt
+public_flat_rd -module "neorv32_clint_B*"   -var "mtime"
+public_flat_rd -module "neorv32_clint_B*"   -var "mti_o"

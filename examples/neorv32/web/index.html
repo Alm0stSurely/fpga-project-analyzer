@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NEORV32 RISC-V SoC: fpa diagram + live RTL simulation</title>
+<meta name="description" content="The FPGA Project Analyzer's diagram of the NEORV32 RISC-V SoC next to the same RTL running live in the browser (GHDL, Verilator, WebAssembly).">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="style.css">
+<script>try { const t = localStorage.getItem("fpa-theme"); if (t) document.documentElement.setAttribute("data-theme", t); } catch (e) {}</script>
+<script type="module" src="app.js"></script>
+</head>
+<body>
+<header class="intro">
+  <div>
+    <h1>NEORV32 RISC-V SoC: diagram and live RTL simulation</h1>
+    <p><b>Left:</b> the <a href="https://github.com/al-nafisah/fpga-project-analyzer">FPGA Project Analyzer (fpa)</a> diagram of
+      unmodified <a href="https://github.com/stnolting/neorv32">NEORV32</a> v1.13.7 RTL (<code>neorv32_test_setup_bootloader</code>
+      with the Arty A7 constraints). <b>Right:</b> the same RTL running live in your browser, converted GHDL &rarr; Verilog &rarr;
+      Verilator &rarr; WebAssembly and clocked at a real-time 1&nbsp;MHz. Blocks glow while the simulated SoC uses them;
+      click a glowing block to jump to its widget, double-click to open it.</p>
+  </div>
+  <nav>
+    <a href="https://github.com/al-nafisah/fpga-project-analyzer">fpa on GitHub</a>
+    <a href="https://github.com/al-nafisah/fpga-project-analyzer/tree/main/examples/neorv32">How this page is built</a>
+    <button id="theme" title="Light or dark theme">Theme</button>
+  </nav>
+</header>
+
+<main class="split">
+  <section class="diagram" aria-label="fpa diagram">
+    <div class="bar">
+      <span><i class="sw glow"></i>active in the simulation</span>
+      <span><i class="sw off"></i>in the RTL but not enabled in this configuration</span>
+      <span id="level"></span>
+    </div>
+    <iframe id="fpa" title="fpa diagram of the NEORV32 test setup"></iframe>
+  </section>
+
+  <section class="sim" aria-label="Live simulation">
+    <div class="card" id="w-stats-speed">
+      <div class="row">
+        <button id="run" disabled>Pause</button>
+        <button id="reset" disabled title="Reset button (rstn_i): restarts the bootloader, memories keep their contents">Reset</button>
+        <label class="switch" title="Run as fast as this machine can instead of 1 M cycles per second"><input type="checkbox" id="turbo"> Turbo</label>
+        <span id="speed" class="speed">loading the simulator&hellip;</span>
+      </div>
+      <div class="sub" id="simtime">&nbsp;</div>
+    </div>
+
+    <div class="card" id="w-terminal">
+      <div class="card-h"><h2>UART0 terminal</h2>
+        <span class="hint">19200 8N1. Click and type: keys go to the UART as raw bytes (bootloader commands are single keys, no Enter).</span>
+        <button id="clear" title="Clear the terminal">Clear</button></div>
+      <div class="term-wrap"><div id="term" class="term" role="log" aria-label="UART0 terminal"><span id="term-out"></span><span id="term-line"></span><span id="term-cur"></span></div><textarea id="term-in" aria-label="Type into the UART" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false"></textarea></div>
+    </div>
+
+    <div class="card" id="w-leds">
+      <div class="card-h"><h2>GPIO LEDs</h2><span class="hint">gpio_o[7:0]. The bootloader blinks LED 0.</span><span id="gpio-hex" class="mono"></span></div>
+      <div class="leds" id="leds"></div>
+    </div>
+
+    <div class="card" id="w-programs">
+      <div class="card-h"><h2>Programs</h2><span class="hint">Click one to reset the SoC and upload it through the bootloader.</span></div>
+      <ul id="progs" class="progs"></ul>
+      <div class="row">
+        <label class="btn file">Upload your own neorv32_exe.bin<input type="file" id="file" accept=".bin,application/octet-stream" hidden></label>
+      </div>
+      <div id="status" class="status" role="status" aria-live="polite"></div>
+      <div class="progress" id="progress" hidden><div></div></div>
+    </div>
+
+    <div class="card" id="w-stats">
+      <div class="card-h"><h2>Activity</h2><span class="hint">Requests per cycle for each block (the same numbers drive the glow).</span></div>
+      <table id="stats" class="stats"></table>
+      <div class="sub" id="cpu-info">&nbsp;</div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  NEORV32 &copy; Stephan Nolting and contributors (BSD-3-Clause). The diagram is fpa's output, shipped as is: fpa does not evaluate
+  VHDL generate conditions, so the blocks this configuration leaves out are shown dimmed. The benchmark program is derived from EEMBC
+  CoreMark sources (Apache-2.0), modified to fit 16 KiB; its results are not CoreMark scores.
+  <a href="THIRD_PARTY.txt">Third-party notices</a>.
+</footer>
+</body>
+</html>
