@@ -1057,6 +1057,12 @@ def _h_stmts(m, toks, i, env):
         if v == "begin":
             i += 1
             continue
+        if v == "signal":  # generate/block declarative part (VHDL-2008)
+            j = _h_skip_decl(toks, i)
+            for nm, _, rng, w, _ in _h_iface(toks[i + 1:j - 1], env):
+                m.signals[nm] = w
+            i = j
+            continue
         if label and (v in ("entity", "component", "configuration") or toks[i].k in ("id", "esc")):
             j = _h_instance(m, toks, i, label)
             if j:
